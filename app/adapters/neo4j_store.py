@@ -359,7 +359,8 @@ class Neo4jStore:
                         r.coverage_status = $coverage_status,
                         r.label = $label,
                         r.spread_percent = $spread_percent,
-                        r.confidence = $confidence
+                        r.confidence = $confidence,
+                        r.platforms = $platforms
                     MERGE (q)-[:HAS_RUN]->(r)
                     """,
                     **history_row,
@@ -457,19 +458,27 @@ class Neo4jStore:
     def get_compare_history(self, normalized_query: str, limit: int = 6) -> list[CompareHistoryItem]:
         if self.enabled and self._driver is not None:
             with self._driver.session() as session:
+                count_row = session.run(
+                    """
+                    MATCH (r:SearchRun)
+                    RETURN count(r) AS count
+                    """
+                ).single()
+                if not count_row or int(count_row["count"]) == 0:
+                    return []
+
                 rows = session.run(
                     """
-                    MATCH (q:SearchQuery {normalized_query: $normalized_query})-[:HAS_RUN]->(r:SearchRun)
-                    OPTIONAL MATCH (r)-[:RETURNED]->(c:CompareProductCluster)
+                    MATCH (r:SearchRun {normalized_query: $normalized_query})
                     RETURN r.compare_id AS compare_id,
                            r.query AS query,
                            r.normalized_query AS normalized_query,
                            toString(r.generated_at) AS generated_at,
                            r.coverage_status AS coverage_status,
-                           r.label AS label,
-                           r.spread_percent AS spread_percent,
-                           r.confidence AS confidence,
-                           coalesce(c.platforms, []) AS platforms
+                           coalesce(r.label, 'none') AS label,
+                           coalesce(r.spread_percent, 0.0) AS spread_percent,
+                           coalesce(r.confidence, 0.0) AS confidence,
+                           coalesce(r.platforms, []) AS platforms
                     ORDER BY r.generated_at DESC
                     LIMIT $limit
                     """,
