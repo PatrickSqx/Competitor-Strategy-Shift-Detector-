@@ -6,13 +6,14 @@ from app.models import EvidenceItem, StrategySignal
 
 
 class SlackClient:
-    def __init__(self, webhook_url: str, timeout_seconds: float = 8.0) -> None:
+    def __init__(self, webhook_url: str, timeout_seconds: float = 8.0, discord_webhook_url: str = "") -> None:
         self.webhook_url = webhook_url
+        self.discord_webhook_url = discord_webhook_url
         self.timeout_seconds = timeout_seconds
 
     @property
     def enabled(self) -> bool:
-        return bool(self.webhook_url)
+        return bool(self.webhook_url or self.discord_webhook_url)
 
     def post_strategy_alert(
         self,
@@ -36,13 +37,19 @@ class SlackClient:
             f"Evidence: {evidence_line}"
         )
 
-        payload = {
-            "text": text,
-            "channel": channel,
-            "mrkdwn": True,
-        }
         try:
-            response = httpx.post(self.webhook_url, json=payload, timeout=self.timeout_seconds)
+            if self.webhook_url:
+                payload = {
+                    "text": text,
+                    "channel": channel,
+                    "mrkdwn": True,
+                }
+                response = httpx.post(self.webhook_url, json=payload, timeout=self.timeout_seconds)
+                response.raise_for_status()
+                return True
+
+            payload = {"content": text}
+            response = httpx.post(self.discord_webhook_url, json=payload, timeout=self.timeout_seconds)
             response.raise_for_status()
             return True
         except Exception:

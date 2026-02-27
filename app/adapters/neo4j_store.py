@@ -6,7 +6,14 @@ from typing import Any
 from neo4j import GraphDatabase
 from neo4j.exceptions import Neo4jError
 
-from app.models import ActionCard, ListingSnapshot, ScrapeTarget, StrategySignal
+from app.models import (
+    ActionCard,
+    CompareHistoryItem,
+    CompareResponse,
+    ListingSnapshot,
+    ScrapeTarget,
+    StrategySignal,
+)
 
 
 class Neo4jStore:
@@ -25,6 +32,7 @@ class Neo4jStore:
         self._memory_signals: list[dict[str, Any]] = []
         self._memory_actions: list[dict[str, Any]] = []
         self._memory_confidence: dict[str, float] = {}
+        self._memory_compare_runs: list[dict[str, Any]] = []
 
     def close(self) -> None:
         if self._driver is not None:
@@ -40,6 +48,11 @@ class Neo4jStore:
             "CREATE CONSTRAINT snapshot_id IF NOT EXISTS FOR (s:Snapshot) REQUIRE s.snapshot_id IS UNIQUE",
             "CREATE CONSTRAINT signal_id IF NOT EXISTS FOR (s:Signal) REQUIRE s.signal_id IS UNIQUE",
             "CREATE CONSTRAINT action_id IF NOT EXISTS FOR (a:Action) REQUIRE a.action_id IS UNIQUE",
+            "CREATE CONSTRAINT search_query_key IF NOT EXISTS FOR (q:SearchQuery) REQUIRE q.normalized_query IS UNIQUE",
+            "CREATE CONSTRAINT search_run_id IF NOT EXISTS FOR (r:SearchRun) REQUIRE r.compare_id IS UNIQUE",
+            "CREATE CONSTRAINT product_cluster_id IF NOT EXISTS FOR (c:CompareProductCluster) REQUIRE c.cluster_id IS UNIQUE",
+            "CREATE CONSTRAINT offer_observation_id IF NOT EXISTS FOR (o:OfferObservation) REQUIRE o.offer_id IS UNIQUE",
+            "CREATE CONSTRAINT finding_id IF NOT EXISTS FOR (f:Finding) REQUIRE f.finding_id IS UNIQUE",
         ]
         try:
             with self._driver.session() as session:
@@ -318,6 +331,163 @@ class Neo4jStore:
         sorted_rows = sorted(self._memory_signals, key=lambda item: item["detected_at"], reverse=True)
         return [StrategySignal.model_validate(row) for row in sorted_rows[:limit]]
 
+    def record_compare_response(self, response: CompareResponse) -> None:
+        payload = response.model_dump(mode="json")
+        history_row = {
+            "compare_id": self._compare_id(payload),
+            "query": payload["query"],
+            "normalized_query": payload["normalized_query"],
+            "generated_at": payload["generated_at"],
+            "coverage_status": payload["coverage_status"],
+            "label": (payload.get("finding") or {}).get("label", "none"),
+            "spread_percent": float((payload.get("finding") or {}).get("spread_percent", 0.0)),
+            "confidence": float((payload.get("finding") or {}).get("confidence", 0.0)),
+            "platforms": [offer.get("platform", "") for offer in payload.get("offers", []) if offer.get("platform")],
+        }
+
+        if self.enabled and self._driver is not None:
+            with self._driver.session() as session:
+                compare_id = history_row["compare_id"]
+                session.run(
+                    """
+                    MERGE (q:SearchQuery {normalized_query: $normalized_query})
+                    SET q.last_query = $query, q.updated_at = datetime($generated_at)
+                    MERGE (r:SearchRun {compare_id: $compare_id})
+                    SET r.query = $query,
+                        r.normalized_query = $normalized_query,
+                        r.generated_at = datetime($generated_at),
+                        r.coverage_status = $coverage_status,
+                        r.label = $label,
+                        r.spread_percent = $spread_percent,
+                        r.confidence = $confidence
+                    MERGE (q)-[:HAS_RUN]->(r)
+                    """,
+                    **history_row,
+                )
+
+                if payload.get("matched_cluster"):
+                    cluster = payload["matched_cluster"]
+                    session.run(
+                        """
+                        MERGE (c:CompareProductCluster {cluster_id: $cluster_id})
+                        SET c.brand = $brand,
+                            c.model = $model,
+                            c.match_method = $match_method,
+                            c.confidence = $confidence,
+                            c.offer_count = $offer_count,
+                            c.platforms = $platforms
+                        WITH c
+                        MATCH (r:SearchRun {compare_id: $compare_id})
+                        MERGE (r)-[:RETURNED]->(c)
+                        """,
+                        compare_id=compare_id,
+                        **cluster,
+                    )
+
+                    for index, offer in enumerate(payload.get("offers", [])):
+                        offer_payload = {
+                            "offer_id": f"{compare_id}::{index}",
+                            "cluster_id": cluster["cluster_id"],
+                            "platform": offer.get("platform", ""),
+                            "title": offer.get("title", ""),
+                            "brand": offer.get("brand", ""),
+                            "model": offer.get("model", ""),
+                            "price": float(offer.get("price", 0.0)),
+                            "currency": offer.get("currency", "USD"),
+                            "promo_text": offer.get("promo_text", ""),
+                            "availability": offer.get("availability", ""),
+                            "url": offer.get("url", ""),
+                            "match_confidence": float(offer.get("match_confidence", 0.0)),
+                        }
+                        session.run(
+                            """
+                            MERGE (o:OfferObservation {offer_id: $offer_id})
+                            SET o.platform = $platform,
+                                o.title = $title,
+                                o.brand = $brand,
+                                o.model = $model,
+                                o.price = $price,
+                                o.currency = $currency,
+                                o.promo_text = $promo_text,
+                                o.availability = $availability,
+                                o.url = $url,
+                                o.match_confidence = $match_confidence
+                            WITH o
+                            MATCH (c:CompareProductCluster {cluster_id: $cluster_id})
+                            MERGE (c)-[:HAS_OFFER]->(o)
+                            """,
+                            **offer_payload,
+                        )
+
+                    if payload.get("finding"):
+                        finding = payload["finding"]
+                        finding_payload = {
+                            "finding_id": compare_id,
+                            "cluster_id": cluster["cluster_id"],
+                            "label": finding.get("label", "none"),
+                            "spread_percent": float(finding.get("spread_percent", 0.0)),
+                            "lowest_platform": finding.get("lowest_platform", ""),
+                            "highest_platform": finding.get("highest_platform", ""),
+                            "reasoning": finding.get("reasoning", ""),
+                            "confidence": float(finding.get("confidence", 0.0)),
+                            "claim_style_text": finding.get("claim_style_text", ""),
+                            "evidence_notes": finding.get("evidence_notes", ""),
+                        }
+                        session.run(
+                            """
+                            MERGE (f:Finding {finding_id: $finding_id})
+                            SET f.label = $label,
+                                f.spread_percent = $spread_percent,
+                                f.lowest_platform = $lowest_platform,
+                                f.highest_platform = $highest_platform,
+                                f.reasoning = $reasoning,
+                                f.confidence = $confidence,
+                                f.claim_style_text = $claim_style_text,
+                                f.evidence_notes = $evidence_notes
+                            WITH f
+                            MATCH (c:CompareProductCluster {cluster_id: $cluster_id})
+                            MERGE (c)-[:FLAGGED_AS]->(f)
+                            """,
+                            **finding_payload,
+                        )
+            return
+
+        self._memory_compare_runs.append(history_row)
+
+    def get_compare_history(self, normalized_query: str, limit: int = 6) -> list[CompareHistoryItem]:
+        if self.enabled and self._driver is not None:
+            with self._driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (q:SearchQuery {normalized_query: $normalized_query})-[:HAS_RUN]->(r:SearchRun)
+                    OPTIONAL MATCH (r)-[:RETURNED]->(c:CompareProductCluster)
+                    RETURN r.compare_id AS compare_id,
+                           r.query AS query,
+                           r.normalized_query AS normalized_query,
+                           toString(r.generated_at) AS generated_at,
+                           r.coverage_status AS coverage_status,
+                           r.label AS label,
+                           r.spread_percent AS spread_percent,
+                           r.confidence AS confidence,
+                           coalesce(c.platforms, []) AS platforms
+                    ORDER BY r.generated_at DESC
+                    LIMIT $limit
+                    """,
+                    normalized_query=normalized_query,
+                    limit=limit,
+                )
+                return [CompareHistoryItem.model_validate(dict(row)) for row in rows]
+
+        rows = [row for row in self._memory_compare_runs if row["normalized_query"] == normalized_query]
+        rows.sort(key=lambda item: item["generated_at"], reverse=True)
+        return [CompareHistoryItem.model_validate(row) for row in rows[:limit]]
+
     @staticmethod
     def _confidence_key(competitor: str, sku: str, signal_type: str) -> str:
         return f"{competitor}::{sku}::{signal_type}"
+
+    @staticmethod
+    def _compare_id(payload: dict[str, Any]) -> str:
+        cluster = payload.get("matched_cluster") or {}
+        cluster_id = cluster.get("cluster_id", "no-cluster")
+        return f"{payload['normalized_query']}::{payload['generated_at']}::{cluster_id}"

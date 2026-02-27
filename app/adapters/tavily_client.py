@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
-from app.models import EvidenceItem
+from app.models import DiscoveryCandidate, EvidenceItem
 
 
 class TavilyClient:
@@ -21,13 +22,64 @@ class TavilyClient:
         if not self.enabled:
             return []
 
-        payload = {
+        raw = self._search(query=query, max_results=max_results)
+        if raw is None:
+            return []
+
+        return self._normalize(raw)
+
+    def search_products(
+        self,
+        query: str,
+        domains: list[str],
+        max_results_per_domain: int = 5,
+    ) -> list[DiscoveryCandidate]:
+        if not self.enabled:
+            return []
+
+        candidates: list[DiscoveryCandidate] = []
+        for domain in domains:
+            raw = self._search(
+                query=query,
+                max_results=max_results_per_domain,
+                include_domains=[domain],
+            )
+            if raw is None:
+                continue
+
+            for item in raw.get("results", []):
+                url = str(item.get("url", "")).strip()
+                if not url:
+                    continue
+                parsed = urlparse(url)
+                platform = self._platform_from_hostname(parsed.netloc or domain)
+                candidates.append(
+                    DiscoveryCandidate(
+                        platform=platform,
+                        domain=domain,
+                        title=str(item.get("title", "")).strip(),
+                        url=url,
+                        snippet=str(item.get("content", "")).strip()[:360],
+                        score=self._coerce_score(item.get("score")),
+                    )
+                )
+        return candidates
+
+    def _search(
+        self,
+        query: str,
+        max_results: int,
+        include_domains: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {
             "query": query,
             "search_depth": "basic",
             "topic": "general",
             "max_results": max_results,
             "include_answer": False,
         }
+        if include_domains:
+            payload["include_domains"] = include_domains
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -41,11 +93,9 @@ class TavilyClient:
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()
-            raw = response.json()
+            return response.json()
         except Exception:
-            return []
-
-        return self._normalize(raw)
+            return None
 
     @staticmethod
     def _normalize(payload: dict[str, Any]) -> list[EvidenceItem]:
@@ -59,3 +109,21 @@ class TavilyClient:
                 )
             )
         return results
+
+    @staticmethod
+    def _coerce_score(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _platform_from_hostname(hostname: str) -> str:
+        lowered = hostname.lower()
+        if "bestbuy" in lowered:
+            return "Best Buy"
+        if "walmart" in lowered:
+            return "Walmart"
+        if "target" in lowered:
+            return "Target"
+        return hostname

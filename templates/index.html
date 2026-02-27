@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Suspicious Differential Pricing Detector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <p class="eyebrow">Cross-platform pricing intelligence</p>
+      <h1>Find public price spreads before they become strategy.</h1>
+      <p class="lede">Search one electronics model and compare list-price, promo pressure, and suspicious differential pricing across Best Buy, Walmart, and Target.</p>
+      <form id="compare-form" class="search-panel">
+        <label for="query" class="search-label">Search an electronics model</label>
+        <div class="search-row">
+          <input id="query" name="query" type="text" placeholder="sony wh-1000xm5" autocomplete="off" required>
+          <button type="submit">Compare</button>
+        </div>
+        <div class="sample-row">
+          __SAMPLE_CHIPS__
+        </div>
+      </form>
+    </section>
+
+    <section class="status-strip" id="status-strip">
+      __STATUS_CARDS__
+    </section>
+
+    <section class="results-grid">
+      <article class="panel panel-table">
+        <div class="panel-head">
+          <h2>Matched offers</h2>
+          <span id="coverage-pill" class="coverage-pill neutral">No query yet</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Platform</th>
+                <th>Product</th>
+                <th>Price</th>
+                <th>Promo</th>
+                <th>Availability</th>
+                <th>Match</th>
+              </tr>
+            </thead>
+            <tbody id="offers-body">
+              <tr class="empty-row"><td colspan="6">Run a search to compare public listed prices.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel panel-analysis">
+        <div class="panel-head">
+          <h2>Finding</h2>
+          <span id="finding-label" class="finding-pill neutral">Awaiting search</span>
+        </div>
+        <div id="finding-content" class="finding-content">
+          <p class="metric"><span>Spread</span><strong id="spread-value">-</strong></p>
+          <p id="finding-reasoning" class="body-copy">We compare public list prices only. No legal conclusion is made from this view.</p>
+          <p id="finding-claim" class="claim-copy">This tool flags suspicious differential pricing, not proven unlawful discrimination.</p>
+          <p id="finding-notes" class="note-copy">Taxes, shipping, and checkout-only adjustments are out of scope unless explicitly shown on the page.</p>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel warnings-panel">
+      <div class="panel-head">
+        <h2>Warnings & caveats</h2>
+      </div>
+      <ul id="warnings-list" class="warnings-list">
+        <li>Results reflect public listed prices only.</li>
+      </ul>
+    </section>
+
+    <section class="panel history-panel">
+      <div class="panel-head">
+        <h2>Recent history</h2>
+      </div>
+      <div id="history-list" class="history-list">
+        <p class="history-empty">History will appear after a successful query.</p>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

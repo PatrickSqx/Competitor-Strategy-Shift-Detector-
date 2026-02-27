@@ -8,6 +8,7 @@ from app.adapters.scraper import WebScraper
 from app.adapters.slack_client import SlackClient
 from app.adapters.tavily_client import TavilyClient
 from app.adapters.yutori_client import YutoriClient
+from app.adapters.llm_client import LLMClient
 from app.config import Settings
 from app.models import ActionCard, RunOnceRequest, RunOnceResponse, StrategySignal
 from app.policy import StrategyPolicy
@@ -21,6 +22,7 @@ class StrategyOrchestrator:
         scraper: WebScraper,
         tavily: TavilyClient,
         yutori: YutoriClient,
+        llm: LLMClient,
         slack: SlackClient,
         policy: StrategyPolicy,
     ) -> None:
@@ -29,6 +31,7 @@ class StrategyOrchestrator:
         self.scraper = scraper
         self.tavily = tavily
         self.yutori = yutori
+        self.llm = llm
         self.slack = slack
         self.policy = policy
 
@@ -65,7 +68,35 @@ class StrategyOrchestrator:
                 delta=learning_delta,
                 default_confidence=detection.base_confidence,
             )
-            final_confidence = min(1.0, max(0.0, detection.base_confidence + (confidence_after - confidence_before)))
+            llm_analysis = self.llm.analyze_signal(
+                snapshot=snapshot,
+                history=history,
+                detection_rationale=detection.rationale,
+                default_action=self.policy.recommendation_for(detection.signal_type),
+                evidence=evidence,
+            )
+            if llm_analysis is not None:
+                evidence = [evidence[idx] for idx in llm_analysis.relevant_evidence_indexes]
+
+            final_confidence = min(
+                1.0,
+                max(
+                    0.0,
+                    detection.base_confidence
+                    + (confidence_after - confidence_before)
+                    + (llm_analysis.confidence_adjustment if llm_analysis is not None else 0.0),
+                ),
+            )
+            recommended_action = (
+                llm_analysis.recommended_action
+                if llm_analysis is not None and llm_analysis.recommended_action
+                else self.policy.recommendation_for(detection.signal_type)
+            )
+            rationale = (
+                llm_analysis.rationale
+                if llm_analysis is not None and llm_analysis.rationale
+                else detection.rationale
+            )
 
             signal = StrategySignal(
                 signal_id=str(uuid.uuid4()),
@@ -75,14 +106,18 @@ class StrategyOrchestrator:
                 severity=detection.severity,  # type: ignore[arg-type]
                 confidence=final_confidence,
                 evidence=evidence,
-                recommended_action=self.policy.recommendation_for(detection.signal_type),
-                rationale=detection.rationale,
+                recommended_action=recommended_action,
+                rationale=rationale,
                 detected_at=now,
                 confidence_before=confidence_before,
                 confidence_after=confidence_after,
             )
 
-            action_message = self.yutori.recommend_action(signal, evidence)
+            action_message = (
+                recommended_action
+                if llm_analysis is not None and llm_analysis.recommended_action
+                else self.yutori.recommend_action(signal, evidence)
+            )
             yutori_task_id = self.yutori.create_scout_task(signal) if signal.severity == "high" else None
             channel = (
                 self.settings.slack_high_channel if signal.severity == "high" else self.settings.slack_watch_channel
