@@ -144,7 +144,7 @@ def compare(request: CompareRequest) -> CompareResponse:
             generated_at=_utc_now(),
             scan_status=_scan_status(discovery.degraded, purchase_options, cluster),
             scan_duration_ms=int((time.perf_counter() - started) * 1000),
-            offers_scanned=len(discovery.candidates),
+            offers_scanned=discovery.scanned_candidates,
             offers_kept=len(purchase_options),
             sources_seen=discovery.sources_seen,
             purchase_options=purchase_options,

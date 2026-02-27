@@ -124,8 +124,13 @@ class RelevanceRanker:
 
     @staticmethod
     def _tokens(value: str) -> set[str]:
-        return {
-            token
-            for token in (re.sub(r"[^a-z0-9]+", "", chunk.lower()) for chunk in value.split())
-            if token and (len(token) >= 3 or any(char.isdigit() for char in token))
-        }
+        tokens: set[str] = set()
+        for raw in re.findall(r"[a-z0-9][a-z0-9/-]*", value.lower()):
+            collapsed = re.sub(r"[^a-z0-9]+", "", raw)
+            if collapsed and (len(collapsed) >= 3 or any(char.isdigit() for char in collapsed)):
+                tokens.add(collapsed)
+            for part in re.split(r"[^a-z0-9]+", raw):
+                normalized = re.sub(r"[^a-z0-9]+", "", part)
+                if normalized and (len(normalized) >= 3 or any(char.isdigit() for char in normalized)):
+                    tokens.add(normalized)
+        return tokens

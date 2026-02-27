@@ -39,6 +39,7 @@ SEARCH_URLS = {
 class DiscoveryResult:
     normalized_query: str
     candidates: list[DiscoveryCandidate]
+    scanned_candidates: int
     sources_seen: list[str]
     warnings: list[str]
     degraded: bool = False
@@ -66,6 +67,7 @@ class QueryDiscoveryService:
         warnings: list[str] = []
         degraded = False
         raw_candidates: list[DiscoveryCandidate] = []
+        all_seen_candidates: list[DiscoveryCandidate] = []
         source_counter: Counter[str] = Counter()
 
         if self.tavily.enabled:
@@ -74,6 +76,7 @@ class QueryDiscoveryService:
                 max_results=max(8, self.max_results_per_domain * 4),
                 query_variants=self._query_variants(normalized_query),
             )
+            all_seen_candidates.extend(raw_candidates)
         else:
             degraded = True
             warnings.append("Tavily is not configured. Falling back to retailer site search only.")
@@ -93,6 +96,7 @@ class QueryDiscoveryService:
                 warnings.extend(fallback_warnings)
             for candidate in fallback_candidates:
                 source_counter[self._root_domain(candidate.domain)] += 1
+            all_seen_candidates.extend(fallback_candidates)
             qualified.extend(self.qualify_candidates(fallback_candidates, normalized_query))
 
         deduped = self._dedupe_candidates(qualified)
@@ -105,6 +109,7 @@ class QueryDiscoveryService:
         return DiscoveryResult(
             normalized_query=normalized_query,
             candidates=deduped,
+            scanned_candidates=len(self._dedupe_candidates(all_seen_candidates)),
             sources_seen=sources_seen,
             warnings=self._dedupe_strings(warnings),
             degraded=degraded,
@@ -119,9 +124,10 @@ class QueryDiscoveryService:
             overlap = self._token_overlap(query_tokens, f"{candidate.title} {candidate.snippet} {candidate.url}")
             product_hint = self._has_product_hint(candidate)
             commerce_hint = self._has_commerce_hint(candidate)
-            if not product_hint and overlap < 0.5:
+            domain_hint = self._root_domain(candidate.domain) in SEARCH_URLS
+            if not product_hint and overlap < (0.35 if domain_hint else 0.5):
                 continue
-            if not commerce_hint and overlap < 0.7:
+            if not commerce_hint and overlap < (0.4 if product_hint or domain_hint else 0.65):
                 continue
             score = max(candidate.score or 0.0, overlap)
             qualified.append(candidate.model_copy(update={"score": round(score, 4)}))
@@ -269,17 +275,13 @@ class QueryDiscoveryService:
 
     @staticmethod
     def _query_tokens(normalized_query: str) -> set[str]:
-        return {
-            token
-            for token in (_normalize_token(chunk) for chunk in normalized_query.split())
-            if token and (len(token) >= 3 or any(char.isdigit() for char in token))
-        }
+        return _tokenize_text(normalized_query)
 
     @staticmethod
     def _token_overlap(query_tokens: set[str], haystack: str) -> float:
         if not query_tokens:
             return 0.0
-        haystack_tokens = {_normalize_token(token) for token in haystack.split()}
+        haystack_tokens = _tokenize_text(haystack)
         hits = sum(1 for token in query_tokens if token in haystack_tokens)
         return hits / max(len(query_tokens), 1)
 
@@ -304,3 +306,16 @@ class QueryDiscoveryService:
 
 def _normalize_token(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _tokenize_text(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw in re.findall(r"[a-z0-9][a-z0-9/-]*", value.lower()):
+        cleaned = _normalize_token(raw)
+        if cleaned and (len(cleaned) >= 3 or any(char.isdigit() for char in cleaned)):
+            tokens.add(cleaned)
+        for part in re.split(r"[^a-z0-9]+", raw):
+            normalized = _normalize_token(part)
+            if normalized and (len(normalized) >= 3 or any(char.isdigit() for char in normalized)):
+                tokens.add(normalized)
+    return tokens

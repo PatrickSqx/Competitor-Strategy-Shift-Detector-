@@ -85,6 +85,19 @@ class CompareServicesTest(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].source, 'site_search')
 
+    def test_discovery_token_overlap_handles_hyphenated_models(self) -> None:
+        service = OfflineDiscoveryService(
+            tavily=FakeTavily([]),
+            supported_domains=['bestbuy.com'],
+            max_results_per_domain=2,
+        )
+        query_tokens = service._query_tokens('sony wh-1000xm5')
+        overlap = service._token_overlap(
+            query_tokens,
+            'https://example.com/sony-wh-1000xm5-wireless-noise-canceling-headphones'
+        )
+        self.assertGreaterEqual(overlap, 0.5)
+
     def test_relevance_ranker_rejects_used_and_accessories(self) -> None:
         ranker = RelevanceRanker()
         offers = [
