@@ -15,6 +15,11 @@ class FakeTavily:
         return list(self._candidates)
 
 
+class OfflineDiscoveryService(QueryDiscoveryService):
+    def _discover_from_site_search(self, domain: str, normalized_query: str):
+        return [], ''
+
+
 class CompareServicesTest(unittest.TestCase):
     def test_query_normalization(self) -> None:
         normalized = QueryDiscoveryService.normalize_query('  Sony   WH-1000XM5  ')
@@ -79,7 +84,7 @@ class CompareServicesTest(unittest.TestCase):
                 ),
             ]
         )
-        service = QueryDiscoveryService(
+        service = OfflineDiscoveryService(
             tavily=tavily,
             supported_domains=['bestbuy.com', 'microcenter.com', 'amazon.com'],
             max_results_per_domain=5,
@@ -91,7 +96,34 @@ class CompareServicesTest(unittest.TestCase):
         self.assertEqual(len(warnings), 0)
         amazon = next(item for item in statuses if item.platform == 'Amazon')
         self.assertEqual(amazon.status, 'missing')
-        self.assertIn('1 discovered URLs', amazon.note)
+        self.assertIn('1 Tavily URLs', amazon.note)
+
+    def test_site_search_html_fallback_extracts_product_links(self) -> None:
+        service = QueryDiscoveryService(
+            tavily=FakeTavily([]),
+            supported_domains=['bestbuy.com', 'microcenter.com', 'amazon.com'],
+            max_results_per_domain=5,
+        )
+        html = """
+        <html>
+          <body>
+            <a href="/site/sony-wh-1000xm5-wireless-noise-canceling-headphones-black/6505727.p">
+              Sony WH-1000XM5 Wireless Noise Canceling Headphones - Black
+            </a>
+            <a href="/site/searchpage.jsp?st=sony+wh-1000xm5">Search results</a>
+          </body>
+        </html>
+        """
+        candidates, scanned = service._extract_site_search_candidates(
+            domain='bestbuy.com',
+            normalized_query='sony wh-1000xm5',
+            base_url='https://www.bestbuy.com/site/searchpage.jsp?st=sony+wh-1000xm5',
+            html=html,
+        )
+        self.assertEqual(scanned, 2)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].platform, 'Best Buy')
+        self.assertIn('/site/sony-wh-1000xm5', candidates[0].url)
 
 
 if __name__ == '__main__':
