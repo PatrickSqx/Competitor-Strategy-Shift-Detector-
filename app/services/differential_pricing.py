@@ -1,26 +1,20 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 
 from app.adapters.llm_client import LLMClient
-from app.models import OfferView, PricingFinding, ProductCluster
+from app.models import ComparisonCluster, PricingFinding
 
-PROMO_PERCENT_PATTERN = re.compile(r'(\d{1,2})\s*%\s*off', re.IGNORECASE)
-PROMO_DOLLAR_PATTERN = re.compile(r'save\s*\$\s*([0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE)
+PROMO_PERCENT_PATTERN = re.compile(r"(\d{1,2})\s*%\s*off", re.IGNORECASE)
+PROMO_DOLLAR_PATTERN = re.compile(r"save\s*\$\s*([0-9]+(?:\.[0-9]{1,2})?)", re.IGNORECASE)
 
 
 class DifferentialPricingService:
     def __init__(self, llm: LLMClient | None = None) -> None:
         self.llm = llm
 
-    def analyze(
-        self,
-        query: str,
-        matched_offers: list[OfferView],
-        cluster: ProductCluster,
-        coverage_status: str,
-    ) -> PricingFinding:
-        offers = sorted(matched_offers, key=lambda offer: offer.price)
+    def analyze(self, query: str, cluster: ComparisonCluster) -> PricingFinding:
+        offers = sorted(cluster.offers, key=lambda offer: offer.price)
         lowest = offers[0]
         highest = offers[-1]
         spread_percent = 0.0
@@ -29,35 +23,50 @@ class DifferentialPricingService:
 
         promo_gap = self._promo_gap_percent(offers)
         effective_gap = max(spread_percent, promo_gap)
-        label = 'none'
-        if effective_gap >= 25:
-            label = 'critical'
-        elif effective_gap >= 15:
-            label = 'high'
-        elif effective_gap >= 8:
-            label = 'watch'
-
-        coverage_factor = 1.0 if len({offer.platform for offer in offers}) == 3 else 0.88
-        fuzzy_factor = 0.9 if cluster.match_method == 'fuzzy_llm' else 1.0
-        completeness_factor = 0.92 if any('fallback' in note for offer in offers for note in offer.parse_notes) else 1.0
-        confidence = max(0.2, min(0.98, round(cluster.confidence * coverage_factor * fuzzy_factor * completeness_factor, 2)))
-
-        promo_note = 'Promotion asymmetry observed.' if promo_gap >= 10 else 'No material promotion asymmetry detected.'
-        reasoning = (
-            f'Public listed prices for the matched product vary by {spread_percent:.2f}% between '
-            f'{lowest.platform} and {highest.platform}. {promo_note}'
+        alert_eligible = (
+            len(offers) >= 3
+            and all(offer.condition in {"new", "unknown"} for offer in offers)
+            and cluster.confidence >= 0.85
+            and (spread_percent >= 8.0 or promo_gap >= 10.0)
         )
-        claim_style_text = (
-            'Suspicious differential pricing based on public listed prices only.'
-            if label != 'none'
-            else 'No strong suspicious differential pricing signal from public listed prices.'
-        )
-        evidence_notes = '; '.join(
+
+        label = "none"
+        if alert_eligible:
+            if effective_gap >= 25.0:
+                label = "critical"
+            elif effective_gap >= 15.0:
+                label = "high"
+            elif effective_gap >= 8.0:
+                label = "watch"
+
+        confidence = round(min(0.99, max(0.25, cluster.confidence - (0.05 if len(offers) < 3 else 0.0))), 2)
+        if len(offers) < 3:
+            reasoning = (
+                f"The exact-match cluster currently has {len(offers)} new-price offers. "
+                f"The visible spread is {spread_percent:.2f}% between {lowest.seller_name} and {highest.seller_name}, "
+                "but that is not enough evidence for a differential-pricing alert."
+            )
+            claim_style_text = "Insufficient evidence for a suspicious differential-pricing alert."
+        elif alert_eligible:
+            reasoning = (
+                f"Public listed prices for the exact-match cluster vary by {spread_percent:.2f}% between "
+                f"{lowest.seller_name} and {highest.seller_name}. Promotion asymmetry is "
+                f"{promo_gap:.2f}% and the cluster confidence is {cluster.confidence:.2f}."
+            )
+            claim_style_text = "Public listed prices suggest a suspicious differential-pricing pattern, not unlawful discrimination."
+        else:
+            reasoning = (
+                f"The exact-match cluster has {len(offers)} offers and a visible spread of {spread_percent:.2f}%, "
+                f"but the evidence does not clear the strict alert gate."
+            )
+            claim_style_text = "No suspicious differential-pricing alert is warranted from the current public listed prices."
+
+        evidence_notes = "; ".join(
             [
-                'Compares public list prices only.',
-                'Taxes, shipping, and checkout-only adjustments are excluded.',
-                'This does not prove unlawful discrimination.',
-                'Coverage is partial.' if coverage_status != 'full' else 'All supported platforms were covered in this run.',
+                "Compares public list prices only.",
+                "Only new or unknown-condition offers are included.",
+                "Taxes, shipping, and checkout-only adjustments are excluded.",
+                "This does not prove unlawful discrimination.",
             ]
         )
 
@@ -66,44 +75,46 @@ class DifferentialPricingService:
                 query=query,
                 offers=offers,
                 draft_finding={
-                    'label': label,
-                    'spread_percent': spread_percent,
-                    'promo_gap_percent': promo_gap,
-                    'coverage_status': coverage_status,
-                    'confidence': confidence,
+                    "label": label,
+                    "alert_eligible": alert_eligible,
+                    "spread_percent": spread_percent,
+                    "promo_gap_percent": promo_gap,
+                    "cluster_confidence": cluster.confidence,
+                    "offer_count": len(offers),
                 },
             )
             if narrative is not None:
                 reasoning = narrative.reasoning
                 claim_style_text = narrative.claim_style_text
-                confidence = max(0.2, min(0.99, round(confidence + narrative.confidence_adjustment, 2)))
+                confidence = round(max(0.25, min(0.99, confidence + narrative.confidence_adjustment)), 2)
 
         return PricingFinding(
             label=label,
+            alert_eligible=alert_eligible,
             spread_percent=spread_percent,
-            lowest_platform=lowest.platform,
-            highest_platform=highest.platform,
+            lowest_offer_id=lowest.offer_id,
+            highest_offer_id=highest.offer_id,
             reasoning=reasoning,
             confidence=confidence,
             claim_style_text=claim_style_text,
             evidence_notes=evidence_notes,
         )
 
-    def _promo_gap_percent(self, offers: list[OfferView]) -> float:
-        promo_values = [self._promo_percent(offer) for offer in offers]
+    def _promo_gap_percent(self, offers) -> float:
+        promo_values = [self._promo_percent(offer.promo_text, offer.price) for offer in offers]
         if max(promo_values, default=0.0) == 0.0:
             return 0.0
         return round(max(promo_values) - min(promo_values), 2)
 
     @staticmethod
-    def _promo_percent(offer: OfferView) -> float:
-        text = offer.promo_text or ''
+    def _promo_percent(promo_text: str, price: float) -> float:
+        text = promo_text or ""
         match = PROMO_PERCENT_PATTERN.search(text)
         if match:
             return float(match.group(1))
         match = PROMO_DOLLAR_PATTERN.search(text)
-        if match and offer.price > 0:
-            return round((float(match.group(1)) / offer.price) * 100, 2)
+        if match and price > 0:
+            return round((float(match.group(1)) / price) * 100, 2)
         if text:
             return 10.0
         return 0.0

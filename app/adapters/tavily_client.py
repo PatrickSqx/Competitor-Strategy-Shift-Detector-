@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 from urllib.parse import urlparse
@@ -31,46 +31,49 @@ class TavilyClient:
     def search_products(
         self,
         query: str,
-        domains: list[str],
-        max_results_per_domain: int = 5,
+        max_results: int = 8,
+        query_variants: list[str] | None = None,
+        include_domains: list[str] | None = None,
     ) -> list[DiscoveryCandidate]:
         if not self.enabled:
             return []
 
+        variants = query_variants or [query]
         candidates: list[DiscoveryCandidate] = []
-        for domain in domains:
-            seen_urls: set[str] = set()
-            for query_variant in self._product_query_variants(query, domain):
-                raw = self._search(
-                    query=query_variant,
-                    max_results=max_results_per_domain,
-                    include_domains=[domain],
-                    search_depth="advanced",
-                )
-                if raw is None:
-                    continue
+        seen_urls: set[str] = set()
+        per_variant_results = max(2, min(max_results, 5))
 
-                for item in raw.get("results", []):
-                    url = str(item.get("url", "")).strip()
-                    if not url or url in seen_urls:
-                        continue
-                    seen_urls.add(url)
-                    parsed = urlparse(url)
-                    platform = self._platform_from_hostname(parsed.netloc or domain)
-                    candidates.append(
-                        DiscoveryCandidate(
-                            platform=platform,
-                            domain=domain,
-                            title=str(item.get("title", "")).strip(),
-                            url=url,
-                            snippet=str(item.get("content", "")).strip()[:360],
-                            score=self._coerce_score(item.get("score")),
-                        )
+        for variant in variants:
+            raw = self._search(
+                query=variant,
+                max_results=per_variant_results,
+                include_domains=include_domains,
+                search_depth="advanced",
+            )
+            if raw is None:
+                continue
+
+            for item in raw.get("results", []):
+                url = str(item.get("url", "")).strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                parsed = urlparse(url)
+                hostname = (parsed.netloc or "").lower()
+                if not hostname:
+                    continue
+                candidates.append(
+                    DiscoveryCandidate(
+                        domain=hostname.replace("www.", ""),
+                        title=str(item.get("title", "")).strip(),
+                        url=url,
+                        snippet=str(item.get("content", "")).strip()[:360],
+                        score=self._coerce_score(item.get("score")),
+                        source="tavily",
                     )
-                    if len([candidate for candidate in candidates if candidate.domain == domain]) >= max_results_per_domain:
-                        break
-                if len([candidate for candidate in candidates if candidate.domain == domain]) >= max_results_per_domain:
-                    break
+                )
+                if len(candidates) >= max_results:
+                    return candidates
         return candidates
 
     def _search(
@@ -107,17 +110,6 @@ class TavilyClient:
             return None
 
     @staticmethod
-    def _product_query_variants(query: str, domain: str) -> list[str]:
-        normalized = " ".join(query.split())
-        return [
-            normalized,
-            f"site:{domain} {normalized}",
-            f"site:{domain} buy {normalized}",
-            f"site:{domain} {normalized} price",
-            f"site:{domain} {normalized} product",
-        ]
-
-    @staticmethod
     def _normalize(payload: dict[str, Any]) -> list[EvidenceItem]:
         results: list[EvidenceItem] = []
         for item in payload.get("results", []):
@@ -136,14 +128,3 @@ class TavilyClient:
             return float(value)
         except (TypeError, ValueError):
             return None
-
-    @staticmethod
-    def _platform_from_hostname(hostname: str) -> str:
-        lowered = hostname.lower()
-        if "bestbuy" in lowered:
-            return "Best Buy"
-        if "microcenter" in lowered:
-            return "Micro Center"
-        if "amazon" in lowered:
-            return "Amazon"
-        return hostname

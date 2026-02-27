@@ -65,8 +65,12 @@ class Settings(BaseModel):
     supported_retail_domains_json: str = os.getenv("SUPPORTED_RETAIL_DOMAINS_JSON", "")
     sample_queries_json: str = os.getenv("SAMPLE_QUERIES_JSON", "")
     http_timeout_seconds: float = float(os.getenv("HTTP_TIMEOUT_SECONDS", "8"))
+    discovery_timeout_seconds: float = float(os.getenv("DISCOVERY_TIMEOUT_SECONDS", "3.5"))
+    extraction_timeout_seconds: float = float(os.getenv("EXTRACTION_TIMEOUT_SECONDS", "4.5"))
     run_limit: int = int(os.getenv("RUN_LIMIT", "20"))
-    discovery_results_per_domain: int = int(os.getenv("DISCOVERY_RESULTS_PER_DOMAIN", "5"))
+    discovery_results_per_domain: int = int(os.getenv("DISCOVERY_RESULTS_PER_DOMAIN", "2"))
+    extraction_candidates_per_platform: int = int(os.getenv("EXTRACTION_CANDIDATES_PER_PLATFORM", "2"))
+    compare_max_workers: int = int(os.getenv("COMPARE_MAX_WORKERS", "4"))
     history_limit: int = int(os.getenv("HISTORY_LIMIT", "6"))
 
     @property

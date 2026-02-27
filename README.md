@@ -1,11 +1,11 @@
-# Suspicious Differential Pricing Detector
+# Open-Web Pricing Intel
 
 Single-page FastAPI web app that:
 - accepts an electronics search query,
-- discovers public product pages across Best Buy, Micro Center, and Amazon,
-- extracts listed prices and promo text,
-- matches the same product across platforms,
-- flags suspicious differential pricing based on public list prices,
+- searches the public web for purchasable product pages,
+- filters down to relevant new purchase options,
+- builds one strict exact-model comparison cluster when possible,
+- flags suspicious differential pricing only when the exact-match evidence is strong enough,
 - stores comparison history in Neo4j when available.
 
 ## Quick Start (Local)
@@ -49,6 +49,14 @@ These map into the generic internal LLM config automatically. When enabled, Gemi
 - assist same-product fuzzy matching when exact model matching fails,
 - filter weak evidence paths,
 - rewrite the final pricing explanation.
+
+Performance-related envs:
+- `DISCOVERY_TIMEOUT_SECONDS`
+- `EXTRACTION_TIMEOUT_SECONDS`
+- `DISCOVERY_RESULTS_PER_DOMAIN`
+- `EXTRACTION_CANDIDATES_PER_PLATFORM`
+- `COMPARE_MAX_WORKERS`
+- `SUPPORTED_RETAIL_DOMAINS_JSON` for optional site-search fallback domains
 
 3. Optional: seed graph:
 ```powershell
@@ -105,6 +113,7 @@ or
 
 - If credentials are missing, the app still runs with reduced functionality.
 - Live scrape may fail for protected pages; the compare API only uses pages where a public listed price could be extracted.
+- The UI is open-web by default; the fallback retail domains are only used when generic discovery is weak.
 - Discord webhooks are supported via `DISCORD_WEBHOOK_URL` if you do not want Slack.
-- The UI labels results as `suspicious differential pricing`; it does not claim unlawful discrimination.
+- The UI is framed as pricing intelligence first; it does not claim unlawful discrimination.
 - Taxes, shipping, and checkout-only adjustments are excluded unless explicitly shown on the product page.

@@ -1,6 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import re
 from urllib.parse import quote_plus, urljoin, urlparse
 
@@ -8,20 +10,38 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.adapters.tavily_client import TavilyClient
-from app.models import DiscoveryCandidate, PlatformCoverage
+from app.models import DiscoveryCandidate
 
-PRODUCT_PATH_HINTS = {
-    'bestbuy.com': ['/site/'],
-    'microcenter.com': ['/product/'],
-    'amazon.com': ['/dp/', '/gp/product/'],
+BLOCKED_TOKENS = {
+    "review",
+    "reviews",
+    "blog",
+    "guide",
+    "news",
+    "forum",
+    "community",
+    "reddit",
+    "youtube",
+    "video",
+    "manual",
 }
-BLOCKED_TOKENS = ('review', 'blog', 'guide', 'news', 'category', 'search', 'deals')
-NOISE_QUERY_TOKENS = {'buy', 'price', 'product', 'electronics', 'site'}
+SEARCH_PAGE_MARKERS = ["/search", "search?", "?s=", "?k=", "&k=", "category", "collections"]
+PRODUCT_PATH_HINTS = ["/dp/", "/gp/product/", "/product/", "/products/", "/item/", "/site/"]
+COMMERCE_HINTS = ["buy", "shop", "price", "cart", "in stock", "pickup", "$", "shipping"]
 SEARCH_URLS = {
-    'bestbuy.com': 'https://www.bestbuy.com/site/searchpage.jsp?st={query}',
-    'microcenter.com': 'https://www.microcenter.com/search/search_results.aspx?Ntt={query}',
-    'amazon.com': 'https://www.amazon.com/s?k={query}',
+    "bestbuy.com": "https://www.bestbuy.com/site/searchpage.jsp?st={query}",
+    "microcenter.com": "https://www.microcenter.com/search/search_results.aspx?Ntt={query}",
+    "amazon.com": "https://www.amazon.com/s?k={query}",
 }
+
+
+@dataclass
+class DiscoveryResult:
+    normalized_query: str
+    candidates: list[DiscoveryCandidate]
+    sources_seen: list[str]
+    warnings: list[str]
+    degraded: bool = False
 
 
 class QueryDiscoveryService:
@@ -29,8 +49,8 @@ class QueryDiscoveryService:
         self,
         tavily: TavilyClient,
         supported_domains: list[str],
-        max_results_per_domain: int = 5,
-        timeout_seconds: float = 8.0,
+        max_results_per_domain: int = 2,
+        timeout_seconds: float = 2.5,
     ) -> None:
         self.tavily = tavily
         self.supported_domains = supported_domains
@@ -39,106 +59,220 @@ class QueryDiscoveryService:
 
     @staticmethod
     def normalize_query(query: str) -> str:
-        return ' '.join(query.strip().lower().split())
+        return " ".join(query.strip().lower().split())
 
-    def discover(self, query: str) -> tuple[str, list[DiscoveryCandidate], list[PlatformCoverage], list[str]]:
+    def discover(self, query: str) -> DiscoveryResult:
         normalized_query = self.normalize_query(query)
         warnings: list[str] = []
+        degraded = False
         raw_candidates: list[DiscoveryCandidate] = []
+        source_counter: Counter[str] = Counter()
+
         if self.tavily.enabled:
             raw_candidates = self.tavily.search_products(
                 query=normalized_query,
-                domains=self.supported_domains,
-                max_results_per_domain=self.max_results_per_domain,
+                max_results=max(8, self.max_results_per_domain * 4),
+                query_variants=self._query_variants(normalized_query),
             )
         else:
-            warnings.append('Tavily is not configured. Falling back to retailer site search only.')
+            degraded = True
+            warnings.append("Tavily is not configured. Falling back to retailer site search only.")
 
-        grouped: dict[str, list[DiscoveryCandidate]] = defaultdict(list)
-        raw_counts: dict[str, int] = defaultdict(int)
-        source_notes: dict[str, str] = {}
+        qualified = self.qualify_candidates(raw_candidates, normalized_query)
         for candidate in raw_candidates:
-            raw_counts[candidate.domain] += 1
-            if self._is_product_candidate(candidate, normalized_query):
-                grouped[candidate.domain].append(candidate)
+            source_counter[self._root_domain(candidate.domain)] += 1
 
-        candidates: list[DiscoveryCandidate] = []
-        platform_statuses: list[PlatformCoverage] = []
-        for domain in self.supported_domains:
-            domain_candidates = grouped.get(domain, [])[: self.max_results_per_domain]
-            if not domain_candidates:
-                fallback_candidates, fallback_note = self._discover_from_site_search(domain, normalized_query)
-                if fallback_candidates:
-                    domain_candidates = fallback_candidates[: self.max_results_per_domain]
-                    source_notes[domain] = fallback_note
-                elif fallback_note:
-                    source_notes[domain] = fallback_note
-            candidates.extend(domain_candidates)
-            if domain_candidates:
-                platform_statuses.append(
-                    PlatformCoverage(
-                        platform=self._platform_name(domain),
-                        status='found',
-                        candidate_count=len(domain_candidates),
-                        note=source_notes.get(
-                            domain,
-                            f'Found {len(domain_candidates)} product-page candidates from {raw_counts.get(domain, len(domain_candidates))} Tavily URLs.',
-                        ),
-                    )
-                )
-            else:
-                platform_statuses.append(
-                    PlatformCoverage(
-                        platform=self._platform_name(domain),
-                        status='missing',
-                        candidate_count=0,
-                        note=source_notes.get(
-                            domain,
-                            f'No product-detail candidates found from {raw_counts.get(domain, 0)} Tavily URLs.',
-                        ),
-                    )
-                )
+        existing_known_domains = {
+            root for root in {self._root_domain(candidate.domain) for candidate in qualified} if root in SEARCH_URLS
+        }
+        fallback_domains = [domain for domain in SEARCH_URLS if domain not in existing_known_domains]
+        if fallback_domains:
+            fallback_candidates, fallback_warnings = self._site_search_fallback(normalized_query, fallback_domains)
+            if fallback_warnings:
+                degraded = True
+                warnings.extend(fallback_warnings)
+            for candidate in fallback_candidates:
+                source_counter[self._root_domain(candidate.domain)] += 1
+            qualified.extend(self.qualify_candidates(fallback_candidates, normalized_query))
 
-        if not candidates:
-            warnings.append('No product pages were discovered. Try a more specific electronics model query.')
-        return normalized_query, candidates, platform_statuses, warnings
+        deduped = self._dedupe_candidates(qualified)
+        deduped.sort(key=lambda item: (item.score is not None, item.score or 0.0, len(item.title)), reverse=True)
 
-    def _is_product_candidate(self, candidate: DiscoveryCandidate, normalized_query: str) -> bool:
-        parsed = urlparse(candidate.url)
-        hostname = parsed.netloc.lower()
-        path = parsed.path.lower()
-        if candidate.domain not in hostname:
-            return False
-        if any(token in path for token in BLOCKED_TOKENS):
-            return False
-        hints = PRODUCT_PATH_HINTS.get(candidate.domain, [])
+        sources_seen = [domain for domain, _ in source_counter.most_common(12)]
+        if not deduped:
+            warnings.append("No product pages were discovered. Try a more specific electronics model query.")
+
+        return DiscoveryResult(
+            normalized_query=normalized_query,
+            candidates=deduped,
+            sources_seen=sources_seen,
+            warnings=self._dedupe_strings(warnings),
+            degraded=degraded,
+        )
+
+    def qualify_candidates(self, candidates: list[DiscoveryCandidate], normalized_query: str) -> list[DiscoveryCandidate]:
+        qualified: list[DiscoveryCandidate] = []
         query_tokens = self._query_tokens(normalized_query)
-        has_hint = any(hint in path for hint in hints) if hints else False
-        title = candidate.title.lower()
-        if any(token in title for token in BLOCKED_TOKENS):
-            return False
-        overlap = self._token_overlap(query_tokens, f"{candidate.title} {candidate.snippet} {path}")
-        if has_hint:
-            return overlap >= 0.2
-        return overlap >= 0.45
+        for candidate in candidates:
+            if self._reject_candidate(candidate):
+                continue
+            overlap = self._token_overlap(query_tokens, f"{candidate.title} {candidate.snippet} {candidate.url}")
+            product_hint = self._has_product_hint(candidate)
+            commerce_hint = self._has_commerce_hint(candidate)
+            if not product_hint and overlap < 0.5:
+                continue
+            if not commerce_hint and overlap < 0.7:
+                continue
+            score = max(candidate.score or 0.0, overlap)
+            qualified.append(candidate.model_copy(update={"score": round(score, 4)}))
+        return qualified
+
+    def _site_search_fallback(self, normalized_query: str, domains: list[str]) -> tuple[list[DiscoveryCandidate], list[str]]:
+        candidates: list[DiscoveryCandidate] = []
+        warnings: list[str] = []
+        with ThreadPoolExecutor(max_workers=min(len(domains), 3)) as executor:
+            future_map = {
+                executor.submit(self._discover_from_site_search, domain, normalized_query): domain
+                for domain in domains
+            }
+            for future in as_completed(future_map):
+                domain = future_map[future]
+                try:
+                    domain_candidates, note = future.result()
+                except Exception as exc:
+                    domain_candidates, note = [], f"Site-search fallback failed for {domain}: {exc.__class__.__name__}."
+                if note:
+                    warnings.append(note)
+                candidates.extend(domain_candidates)
+        return candidates, warnings
+
+    def _discover_from_site_search(self, domain: str, normalized_query: str) -> tuple[list[DiscoveryCandidate], str]:
+        search_url = SEARCH_URLS.get(domain)
+        if not search_url:
+            return [], ""
+        url = search_url.format(query=quote_plus(normalized_query))
+        try:
+            response = httpx.get(
+                url,
+                timeout=self.timeout_seconds,
+                follow_redirects=True,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            return [], f"Site-search fallback failed for {domain}: {exc.__class__.__name__}."
+
+        candidates, scanned_count = self._extract_site_search_candidates(
+            domain=domain,
+            normalized_query=normalized_query,
+            base_url=str(response.url),
+            html=response.text,
+        )
+        if candidates:
+            return candidates[: self.max_results_per_domain], f"Site-search fallback found {len(candidates[: self.max_results_per_domain])} purchase candidates from {scanned_count} scanned links on {domain}."
+        return [], f"Site-search fallback found no purchase candidates in {scanned_count} scanned links on {domain}."
+
+    def _extract_site_search_candidates(
+        self,
+        domain: str,
+        normalized_query: str,
+        base_url: str,
+        html: str,
+    ) -> tuple[list[DiscoveryCandidate], int]:
+        soup = BeautifulSoup(html, "html.parser")
+        candidates: list[DiscoveryCandidate] = []
+        seen_urls: set[str] = set()
+        scanned_count = 0
+        query_tokens = self._query_tokens(normalized_query)
+
+        for node in soup.find_all("a", href=True):
+            href = str(node.get("href", "")).strip()
+            if not href:
+                continue
+            absolute_url = urljoin(base_url, href)
+            parsed = urlparse(absolute_url)
+            hostname = parsed.netloc.lower().replace("www.", "")
+            if domain not in hostname:
+                continue
+            scanned_count += 1
+
+            title = (
+                node.get_text(" ", strip=True)
+                or str(node.get("aria-label", "")).strip()
+                or str(node.get("title", "")).strip()
+            )
+            snippet = str(node.get("aria-label", "")).strip()
+            if not title and not snippet:
+                continue
+            if absolute_url in seen_urls:
+                continue
+
+            candidate = DiscoveryCandidate(
+                domain=self._root_domain(hostname),
+                title=title[:240],
+                url=absolute_url,
+                snippet=snippet[:360],
+                score=round(self._token_overlap(query_tokens, f"{title} {snippet} {absolute_url}"), 4),
+                source="site_search",
+            )
+            if self._reject_candidate(candidate):
+                continue
+            seen_urls.add(absolute_url)
+            candidates.append(candidate)
+        return candidates, scanned_count
+
+    def _query_variants(self, normalized_query: str) -> list[str]:
+        return [
+            normalized_query,
+            f"buy {normalized_query}",
+            f"{normalized_query} price",
+            f"{normalized_query} in stock",
+        ]
+
+    def _reject_candidate(self, candidate: DiscoveryCandidate) -> bool:
+        parsed = urlparse(candidate.url)
+        hostname = parsed.netloc.lower().replace("www.", "")
+        path = parsed.path.lower()
+        text = f"{candidate.title} {candidate.snippet} {candidate.url}".lower()
+        if not hostname:
+            return True
+        if any(token in text for token in BLOCKED_TOKENS):
+            return True
+        if any(marker in path or marker in candidate.url.lower() for marker in SEARCH_PAGE_MARKERS):
+            return True
+        if "accessories" in path or "replacement" in path:
+            return True
+        return False
+
+    def _has_product_hint(self, candidate: DiscoveryCandidate) -> bool:
+        lowered_url = candidate.url.lower()
+        lowered_text = f"{candidate.title} {candidate.snippet}".lower()
+        if any(hint in lowered_url for hint in PRODUCT_PATH_HINTS):
+            return True
+        return any(token in lowered_text for token in COMMERCE_HINTS)
+
+    def _has_commerce_hint(self, candidate: DiscoveryCandidate) -> bool:
+        lowered_text = f"{candidate.title} {candidate.snippet}".lower()
+        return any(token in lowered_text for token in COMMERCE_HINTS) or "$" in lowered_text
 
     @staticmethod
-    def _platform_name(domain: str) -> str:
-        if 'bestbuy' in domain:
-            return 'Best Buy'
-        if 'microcenter' in domain:
-            return 'Micro Center'
-        if 'amazon' in domain:
-            return 'Amazon'
-        return domain
+    def _dedupe_candidates(candidates: list[DiscoveryCandidate]) -> list[DiscoveryCandidate]:
+        by_url: dict[str, DiscoveryCandidate] = {}
+        for candidate in candidates:
+            current = by_url.get(candidate.url)
+            if current is None or (candidate.score or 0.0) > (current.score or 0.0):
+                by_url[candidate.url] = candidate
+        return list(by_url.values())
 
     @staticmethod
     def _query_tokens(normalized_query: str) -> set[str]:
-        tokens = {_normalize_token(token) for token in normalized_query.split()}
         return {
             token
-            for token in tokens
-            if token and token not in NOISE_QUERY_TOKENS and (len(token) >= 3 or any(char.isdigit() for char in token))
+            for token in (_normalize_token(chunk) for chunk in normalized_query.split())
+            if token and (len(token) >= 3 or any(char.isdigit() for char in token))
         }
 
     @staticmethod
@@ -149,94 +283,24 @@ class QueryDiscoveryService:
         hits = sum(1 for token in query_tokens if token in haystack_tokens)
         return hits / max(len(query_tokens), 1)
 
-    def _discover_from_site_search(self, domain: str, normalized_query: str) -> tuple[list[DiscoveryCandidate], str]:
-        search_url = SEARCH_URLS.get(domain)
-        if not search_url:
-            return [], ''
-        url = search_url.format(query=quote_plus(normalized_query))
-        try:
-            response = httpx.get(
-                url,
-                timeout=self.timeout_seconds,
-                follow_redirects=True,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                },
-            )
-            response.raise_for_status()
-        except Exception as exc:
-            return [], f'Site-search fallback failed: {exc.__class__.__name__}.'
+    @staticmethod
+    def _root_domain(domain: str) -> str:
+        cleaned = domain.lower().replace("www.", "")
+        parts = cleaned.split(".")
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return cleaned
 
-        candidates, scanned_count = self._extract_site_search_candidates(
-            domain=domain,
-            normalized_query=normalized_query,
-            base_url=str(response.url),
-            html=response.text,
-        )
-        if candidates:
-            return (
-                candidates[: self.max_results_per_domain],
-                f'Site-search fallback found {len(candidates[: self.max_results_per_domain])} product-page candidates from {scanned_count} scanned links.',
-            )
-        return [], f'Site-search fallback found no product-detail candidates in {scanned_count} scanned links.'
-
-    def _extract_site_search_candidates(
-        self,
-        domain: str,
-        normalized_query: str,
-        base_url: str,
-        html: str,
-    ) -> tuple[list[DiscoveryCandidate], int]:
-        soup = BeautifulSoup(html, 'html.parser')
-        candidates: list[DiscoveryCandidate] = []
-        seen_urls: set[str] = set()
-        scanned_count = 0
-        query_tokens = self._query_tokens(normalized_query)
-
-        for node in soup.find_all('a', href=True):
-            href = str(node.get('href', '')).strip()
-            if not href:
-                continue
-            absolute_url = urljoin(base_url, href)
-            parsed = urlparse(absolute_url)
-            hostname = parsed.netloc.lower()
-            if domain not in hostname:
-                continue
-
-            scanned_count += 1
-            title = (
-                node.get_text(' ', strip=True)
-                or str(node.get('aria-label', '')).strip()
-                or str(node.get('title', '')).strip()
-            )
-            snippet = str(node.get('aria-label', '')).strip()
-            if not title and not snippet:
-                continue
-            if absolute_url in seen_urls:
-                continue
-
-            overlap = self._token_overlap(query_tokens, f'{title} {snippet} {absolute_url}')
-            candidate = DiscoveryCandidate(
-                platform=self._platform_name(domain),
-                domain=domain,
-                title=title[:240],
-                url=absolute_url,
-                snippet=snippet[:360],
-                score=overlap,
-            )
-            if not self._is_product_candidate(candidate, normalized_query):
-                continue
-
-            seen_urls.add(absolute_url)
-            candidates.append(candidate)
-
-        return candidates, scanned_count
+    @staticmethod
+    def _dedupe_strings(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        output: list[str] = []
+        for item in items:
+            if item and item not in seen:
+                seen.add(item)
+                output.append(item)
+        return output
 
 
-def platform_name_for_domain(domain: str) -> str:
-    return QueryDiscoveryService._platform_name(domain)
-
-
-def _normalize_token(token: str) -> str:
-    return re.sub(r'[^a-z0-9]+', '', token.lower())
+def _normalize_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())

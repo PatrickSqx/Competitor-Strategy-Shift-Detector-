@@ -338,16 +338,18 @@ class Neo4jStore:
             "query": payload["query"],
             "normalized_query": payload["normalized_query"],
             "generated_at": payload["generated_at"],
-            "coverage_status": payload["coverage_status"],
-            "label": (payload.get("finding") or {}).get("label", "none"),
+            "scan_status": payload["scan_status"],
+            "offers_scanned": int(payload.get("offers_scanned", 0)),
+            "offers_kept": int(payload.get("offers_kept", 0)),
+            "cluster_offer_count": int((payload.get("comparison_cluster") or {}).get("offer_count", 0)),
+            "finding_label": (payload.get("finding") or {}).get("label", "none"),
             "spread_percent": float((payload.get("finding") or {}).get("spread_percent", 0.0)),
-            "confidence": float((payload.get("finding") or {}).get("confidence", 0.0)),
-            "platforms": [offer.get("platform", "") for offer in payload.get("offers", []) if offer.get("platform")],
+            "top_domains": [str(item) for item in payload.get("sources_seen", [])[:8]],
+            "top_offer_titles": [offer.get("title", "") for offer in payload.get("purchase_options", [])[:5] if offer.get("title")],
         }
 
         if self.enabled and self._driver is not None:
             with self._driver.session() as session:
-                compare_id = history_row["compare_id"]
                 session.run(
                     """
                     MERGE (q:SearchQuery {normalized_query: $normalized_query})
@@ -356,101 +358,18 @@ class Neo4jStore:
                     SET r.query = $query,
                         r.normalized_query = $normalized_query,
                         r.generated_at = datetime($generated_at),
-                        r.coverage_status = $coverage_status,
-                        r.label = $label,
+                        r.scan_status = $scan_status,
+                        r.offers_scanned = $offers_scanned,
+                        r.offers_kept = $offers_kept,
+                        r.cluster_offer_count = $cluster_offer_count,
+                        r.finding_label = $finding_label,
                         r.spread_percent = $spread_percent,
-                        r.confidence = $confidence,
-                        r.platforms = $platforms
+                        r.top_domains = $top_domains,
+                        r.top_offer_titles = $top_offer_titles
                     MERGE (q)-[:HAS_RUN]->(r)
                     """,
                     **history_row,
                 )
-
-                if payload.get("matched_cluster"):
-                    cluster = payload["matched_cluster"]
-                    session.run(
-                        """
-                        MERGE (c:CompareProductCluster {cluster_id: $cluster_id})
-                        SET c.brand = $brand,
-                            c.model = $model,
-                            c.match_method = $match_method,
-                            c.confidence = $confidence,
-                            c.offer_count = $offer_count,
-                            c.platforms = $platforms
-                        WITH c
-                        MATCH (r:SearchRun {compare_id: $compare_id})
-                        MERGE (r)-[:RETURNED]->(c)
-                        """,
-                        compare_id=compare_id,
-                        **cluster,
-                    )
-
-                    for index, offer in enumerate(payload.get("offers", [])):
-                        offer_payload = {
-                            "offer_id": f"{compare_id}::{index}",
-                            "cluster_id": cluster["cluster_id"],
-                            "platform": offer.get("platform", ""),
-                            "title": offer.get("title", ""),
-                            "brand": offer.get("brand", ""),
-                            "model": offer.get("model", ""),
-                            "price": float(offer.get("price", 0.0)),
-                            "currency": offer.get("currency", "USD"),
-                            "promo_text": offer.get("promo_text", ""),
-                            "availability": offer.get("availability", ""),
-                            "url": offer.get("url", ""),
-                            "match_confidence": float(offer.get("match_confidence", 0.0)),
-                        }
-                        session.run(
-                            """
-                            MERGE (o:OfferObservation {offer_id: $offer_id})
-                            SET o.platform = $platform,
-                                o.title = $title,
-                                o.brand = $brand,
-                                o.model = $model,
-                                o.price = $price,
-                                o.currency = $currency,
-                                o.promo_text = $promo_text,
-                                o.availability = $availability,
-                                o.url = $url,
-                                o.match_confidence = $match_confidence
-                            WITH o
-                            MATCH (c:CompareProductCluster {cluster_id: $cluster_id})
-                            MERGE (c)-[:HAS_OFFER]->(o)
-                            """,
-                            **offer_payload,
-                        )
-
-                    if payload.get("finding"):
-                        finding = payload["finding"]
-                        finding_payload = {
-                            "finding_id": compare_id,
-                            "cluster_id": cluster["cluster_id"],
-                            "label": finding.get("label", "none"),
-                            "spread_percent": float(finding.get("spread_percent", 0.0)),
-                            "lowest_platform": finding.get("lowest_platform", ""),
-                            "highest_platform": finding.get("highest_platform", ""),
-                            "reasoning": finding.get("reasoning", ""),
-                            "confidence": float(finding.get("confidence", 0.0)),
-                            "claim_style_text": finding.get("claim_style_text", ""),
-                            "evidence_notes": finding.get("evidence_notes", ""),
-                        }
-                        session.run(
-                            """
-                            MERGE (f:Finding {finding_id: $finding_id})
-                            SET f.label = $label,
-                                f.spread_percent = $spread_percent,
-                                f.lowest_platform = $lowest_platform,
-                                f.highest_platform = $highest_platform,
-                                f.reasoning = $reasoning,
-                                f.confidence = $confidence,
-                                f.claim_style_text = $claim_style_text,
-                                f.evidence_notes = $evidence_notes
-                            WITH f
-                            MATCH (c:CompareProductCluster {cluster_id: $cluster_id})
-                            MERGE (c)-[:FLAGGED_AS]->(f)
-                            """,
-                            **finding_payload,
-                        )
             return
 
         self._memory_compare_runs.append(history_row)
@@ -474,11 +393,12 @@ class Neo4jStore:
                            r.query AS query,
                            r.normalized_query AS normalized_query,
                            toString(r.generated_at) AS generated_at,
-                           r.coverage_status AS coverage_status,
-                           coalesce(r.label, 'none') AS label,
+                           coalesce(r.scan_status, 'insufficient') AS scan_status,
+                           coalesce(r.offers_kept, 0) AS offers_kept,
+                           coalesce(r.cluster_offer_count, 0) AS cluster_offer_count,
+                           coalesce(r.finding_label, 'none') AS finding_label,
                            coalesce(r.spread_percent, 0.0) AS spread_percent,
-                           coalesce(r.confidence, 0.0) AS confidence,
-                           coalesce(r.platforms, []) AS platforms
+                           coalesce(r.top_domains, []) AS top_domains
                     ORDER BY r.generated_at DESC
                     LIMIT $limit
                     """,
@@ -497,6 +417,6 @@ class Neo4jStore:
 
     @staticmethod
     def _compare_id(payload: dict[str, Any]) -> str:
-        cluster = payload.get("matched_cluster") or {}
+        cluster = payload.get("comparison_cluster") or {}
         cluster_id = cluster.get("cluster_id", "no-cluster")
         return f"{payload['normalized_query']}::{payload['generated_at']}::{cluster_id}"

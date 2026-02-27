@@ -1,7 +1,15 @@
 ﻿const form = document.getElementById('compare-form');
 const queryInput = document.getElementById('query');
-const offersBody = document.getElementById('offers-body');
-const coveragePill = document.getElementById('coverage-pill');
+const purchaseOptionsBody = document.getElementById('purchase-options-body');
+const scanPill = document.getElementById('scan-pill');
+const clusterPill = document.getElementById('cluster-pill');
+const summaryStatus = document.getElementById('summary-status');
+const summaryDuration = document.getElementById('summary-duration');
+const summaryScanned = document.getElementById('summary-scanned');
+const summaryKept = document.getElementById('summary-kept');
+const summaryCluster = document.getElementById('summary-cluster');
+const sourcesList = document.getElementById('sources-list');
+const clusterContent = document.getElementById('cluster-content');
 const findingLabel = document.getElementById('finding-label');
 const spreadValue = document.getElementById('spread-value');
 const findingReasoning = document.getElementById('finding-reasoning');
@@ -21,9 +29,7 @@ sampleChips.forEach((chip) => {
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const query = queryInput.value.trim();
-  if (!query) {
-    return;
-  }
+  if (!query) return;
 
   setLoadingState();
   try {
@@ -57,85 +63,135 @@ async function loadHistory(query) {
 }
 
 function setLoadingState() {
-  coveragePill.textContent = 'Scanning';
-  coveragePill.className = 'coverage-pill neutral';
+  summaryStatus.textContent = 'Scanning';
+  summaryDuration.textContent = '-';
+  summaryScanned.textContent = '0';
+  summaryKept.textContent = '0';
+  summaryCluster.textContent = '0';
+  scanPill.textContent = 'Scanning';
+  scanPill.className = 'coverage-pill neutral';
+  clusterPill.textContent = 'Scanning';
+  clusterPill.className = 'finding-pill neutral';
   findingLabel.textContent = 'Analyzing';
   findingLabel.className = 'finding-pill neutral';
-  offersBody.innerHTML = '<tr class="empty-row"><td colspan="6">Scanning product pages and matching offers...</td></tr>';
-  warningsList.innerHTML = '<li>Working through Tavily discovery, page extraction, and same-product matching.</li>';
+  sourcesList.innerHTML = '<span class="source-badge muted">Searching the public web...</span>';
+  clusterContent.innerHTML = '<p class="body-copy">Building a strict exact-model cluster from the relevant purchase options.</p>';
+  purchaseOptionsBody.innerHTML = '<tr class="empty-row"><td colspan="7">Scanning product pages, filtering conditions, and ranking relevance...</td></tr>';
+  warningsList.innerHTML = '<li>Running open-web discovery, extraction, relevance ranking, and exact-model matching.</li>';
 }
 
 function renderCompareResponse(payload) {
-  renderPlatformStatuses(payload.platform_statuses || []);
-  renderOffers(payload.offers || [], payload.finding);
-  renderFinding(payload.finding, payload.coverage_status);
+  renderSummary(payload);
+  renderPurchaseOptions(payload.purchase_options || []);
+  renderCluster(payload.comparison_cluster, payload.finding);
+  renderFinding(payload.finding, payload.comparison_cluster, payload.scan_status);
   renderWarnings(payload.warnings || []);
 }
 
-function renderPlatformStatuses(statuses) {
-  document.querySelectorAll('.status-card').forEach((node) => {
-    const platform = node.dataset.platform;
-    const status = statuses.find((item) => item.platform === platform);
-    if (!status) {
-      node.className = 'status-card missing';
-      node.querySelector('.status-label').textContent = 'Missing';
-      return;
-    }
-    node.className = `status-card ${status.status}`;
-    node.querySelector('.status-label').textContent = status.note || status.status;
-  });
-}
+function renderSummary(payload) {
+  summaryStatus.textContent = payload.scan_status || 'unknown';
+  summaryDuration.textContent = `${Number(payload.scan_duration_ms || 0)} ms`;
+  summaryScanned.textContent = String(payload.offers_scanned || 0);
+  summaryKept.textContent = String(payload.offers_kept || 0);
+  summaryCluster.textContent = String(payload.comparison_cluster ? payload.comparison_cluster.offer_count : 0);
+  scanPill.textContent = payload.scan_status || 'unknown';
+  scanPill.className = `coverage-pill ${payload.scan_status || 'neutral'}`;
 
-function renderOffers(offers, finding) {
-  if (!offers.length) {
-    offersBody.innerHTML = '<tr class="empty-row"><td colspan="6">No priced offers were available for comparison.</td></tr>';
+  const sources = payload.sources_seen || [];
+  if (!sources.length) {
+    sourcesList.innerHTML = '<span class="source-badge muted">No sources were retained for this run.</span>';
     return;
   }
+  sourcesList.innerHTML = sources.map((source) => `<span class="source-badge">${escapeHtml(source)}</span>`).join('');
+}
 
-  const lowest = finding ? finding.lowest_platform : '';
-  const highest = finding ? finding.highest_platform : '';
-  offersBody.innerHTML = offers.map((offer) => {
-    const tags = [];
-    if (offer.platform === lowest) tags.push('<span class="platform-tag lowest">Lowest</span>');
-    if (offer.platform === highest) tags.push('<span class="platform-tag highest">Highest</span>');
-    const promo = offer.promo_text ? `<span class="promo-badge">Promo-heavy</span>${escapeHtml(offer.promo_text)}` : 'No visible promo';
+function renderPurchaseOptions(options) {
+  if (!options.length) {
+    purchaseOptionsBody.innerHTML = '<tr class="empty-row"><td colspan="7">No relevant new purchase options cleared the filter.</td></tr>';
+    return;
+  }
+  purchaseOptionsBody.innerHTML = options.map((option) => {
+    const promo = option.promo_text ? `<span class="promo-badge">Promo</span>${escapeHtml(option.promo_text)}` : 'No visible promo';
+    const condition = option.condition === 'unknown' ? 'unknown' : option.condition.replaceAll('_', ' ');
     return `
       <tr>
-        <td>${escapeHtml(offer.platform)}<div class="product-meta">${escapeHtml(offer.source_domain || '')}</div></td>
         <td>
-          <div class="product-title">${escapeHtml(offer.title)}</div>
-          <div class="product-meta">${escapeHtml(offer.brand)} ${offer.model ? '&middot; ' + escapeHtml(offer.model) : ''}</div>
-          ${tags.join('')}
+          <div class="product-title">${escapeHtml(option.seller_name)}</div>
+          <div class="product-meta">${escapeHtml(option.source_domain)}</div>
+        </td>
+        <td>
+          <div class="product-title">${escapeHtml(option.title)}</div>
+          <div class="product-meta">${escapeHtml(option.brand)}${option.model ? ' · ' + escapeHtml(option.model) : ''}${option.variant ? ' · ' + escapeHtml(option.variant) : ''}</div>
         </td>
         <td class="price-cell">
           <div class="price-stack">
-            <span class="price-main">${escapeHtml(offer.currency)} ${Number(offer.price).toFixed(2)}</span>
-            <a href="${escapeAttr(offer.url)}" target="_blank" rel="noreferrer">Open page</a>
+            <span class="price-main">${escapeHtml(option.currency)} ${Number(option.price).toFixed(2)}</span>
+            <a href="${escapeAttr(option.url)}" target="_blank" rel="noreferrer">Open page</a>
           </div>
         </td>
+        <td>${escapeHtml(condition)}</td>
         <td>${promo}</td>
-        <td>${escapeHtml(offer.availability || 'unknown')}</td>
-        <td>${Math.round((offer.match_confidence || 0) * 100)}%</td>
+        <td>${Math.round((option.relevance_score || 0) * 100)}%</td>
+        <td>${Math.round((option.match_confidence || 0) * 100)}%</td>
       </tr>
     `;
   }).join('');
 }
 
-function renderFinding(finding, coverageStatus) {
-  coveragePill.textContent = coverageStatus || 'unknown';
-  coveragePill.className = `coverage-pill ${coverageStatus || 'neutral'}`;
+function renderCluster(cluster, finding) {
+  if (!cluster) {
+    clusterPill.textContent = 'No cluster';
+    clusterPill.className = 'finding-pill neutral';
+    clusterContent.innerHTML = '<p class="body-copy">No strict exact-model cluster was confirmed from the current purchase options.</p>';
+    return;
+  }
+
+  const eligibility = finding && finding.alert_eligible ? 'Alert eligible' : 'Not alert eligible';
+  clusterPill.textContent = eligibility;
+  clusterPill.className = `finding-pill ${finding && finding.alert_eligible ? finding.label : 'neutral'}`;
+  const rows = cluster.offers.map((offer) => `
+    <tr>
+      <td>${escapeHtml(offer.seller_name)}</td>
+      <td>${escapeHtml(offer.source_domain)}</td>
+      <td>${escapeHtml(offer.currency)} ${Number(offer.price).toFixed(2)}</td>
+      <td>${Math.round((offer.match_confidence || 0) * 100)}%</td>
+    </tr>
+  `).join('');
+  clusterContent.innerHTML = `
+    <div class="cluster-meta">
+      <div><strong>${escapeHtml(cluster.brand)} ${escapeHtml(cluster.model)}</strong>${cluster.variant ? ` · ${escapeHtml(cluster.variant)}` : ''}</div>
+      <div class="product-meta">${escapeHtml(cluster.match_method)} · confidence ${Math.round((cluster.confidence || 0) * 100)}% · ${cluster.offer_count} offers</div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Seller</th>
+            <th>Domain</th>
+            <th>Price</th>
+            <th>Match</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderFinding(finding, cluster, scanStatus) {
   if (!finding) {
     findingLabel.textContent = 'No finding';
     findingLabel.className = 'finding-pill neutral';
     spreadValue.textContent = '-';
-    findingReasoning.textContent = 'No confident same-product cluster was found for the current query.';
-    findingClaim.textContent = 'This tool only compares public listed prices after it has matched the same product across platforms.';
-    findingNotes.textContent = 'Try a more specific model number or storage variant.';
+    findingReasoning.textContent = 'No exact-match cluster was available for a pricing-intel conclusion.';
+    findingClaim.textContent = 'The tool can still return relevant purchase options even when the strict comparison cluster is missing.';
+    findingNotes.textContent = `Scan status: ${escapeHtml(scanStatus || 'unknown')}. Try a tighter model number or storage variant.`;
     return;
   }
-  findingLabel.textContent = finding.label;
-  findingLabel.className = `finding-pill ${finding.label}`;
-  spreadValue.textContent = `${Number(finding.spread_percent).toFixed(2)}%`;
+
+  findingLabel.textContent = finding.alert_eligible ? finding.label : 'No alert';
+  findingLabel.className = `finding-pill ${finding.alert_eligible ? finding.label : 'neutral'}`;
+  spreadValue.textContent = `${Number(finding.spread_percent || 0).toFixed(2)}%`;
   findingReasoning.textContent = finding.reasoning;
   findingClaim.textContent = finding.claim_style_text;
   findingNotes.textContent = finding.evidence_notes;
@@ -154,21 +210,28 @@ function renderHistory(items) {
   historyList.innerHTML = items.map((item) => `
     <article class="history-card">
       <strong>${escapeHtml(item.query)}</strong>
-      <div class="history-meta">${escapeHtml(item.generated_at)} · ${escapeHtml(item.coverage_status)} · ${escapeHtml(item.label)}</div>
-      <div>Spread: ${Number(item.spread_percent).toFixed(2)}% · Confidence: ${Math.round((item.confidence || 0) * 100)}%</div>
-      <div>${escapeHtml((item.platforms || []).join(' / '))}</div>
+      <div class="history-meta">${escapeHtml(item.generated_at)} · ${escapeHtml(item.scan_status)} · ${escapeHtml(item.finding_label)}</div>
+      <div>Offers kept: ${Number(item.offers_kept || 0)} · Cluster: ${Number(item.cluster_offer_count || 0)} · Spread: ${Number(item.spread_percent || 0).toFixed(2)}%</div>
+      <div>${escapeHtml((item.top_domains || []).join(' / '))}</div>
     </article>
   `).join('');
 }
 
 function renderError(message) {
-  offersBody.innerHTML = `<tr class="empty-row"><td colspan="6">${escapeHtml(message)}</td></tr>`;
+  summaryStatus.textContent = 'Error';
+  scanPill.textContent = 'Error';
+  scanPill.className = 'coverage-pill degraded';
+  purchaseOptionsBody.innerHTML = `<tr class="empty-row"><td colspan="7">${escapeHtml(message)}</td></tr>`;
+  sourcesList.innerHTML = '<span class="source-badge muted">No sources available.</span>';
+  clusterPill.textContent = 'Error';
+  clusterPill.className = 'finding-pill critical';
+  clusterContent.innerHTML = '<p class="body-copy">The exact-match cluster could not be computed because the compare request failed.</p>';
   warningsList.innerHTML = `<li>${escapeHtml(message)}</li>`;
   findingLabel.textContent = 'Error';
   findingLabel.className = 'finding-pill critical';
   spreadValue.textContent = '-';
   findingReasoning.textContent = 'The comparison request did not complete successfully.';
-  findingClaim.textContent = 'Check the backend configuration for Tavily, Gemini, and the supported retail domains.';
+  findingClaim.textContent = 'Check the backend configuration for Tavily, Gemini, and page extraction.';
   findingNotes.textContent = 'No legal or pricing conclusion should be drawn from a failed run.';
 }
 
@@ -187,9 +250,7 @@ function escapeAttr(value) {
 
 async function parseResponse(response) {
   const text = await response.text();
-  if (!text) {
-    return {};
-  }
+  if (!text) return {};
   try {
     return JSON.parse(text);
   } catch {

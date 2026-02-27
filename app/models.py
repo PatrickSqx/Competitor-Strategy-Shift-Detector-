@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
@@ -81,69 +81,71 @@ class CompareRequest(BaseModel):
 
 
 class DiscoveryCandidate(BaseModel):
-    platform: str
     domain: str
     title: str = ""
     url: str
     snippet: str = ""
     score: float | None = None
+    source: Literal["tavily", "site_search"] = "tavily"
 
 
-class OfferView(BaseModel):
-    platform: str
+class PurchaseOption(BaseModel):
+    offer_id: str
+    seller_name: str
+    source_domain: str
     title: str
     brand: str = ""
     model: str = ""
+    variant: str = ""
     price: float = Field(gt=0)
     currency: str = "USD"
+    condition: Literal["new", "unknown", "used", "refurbished", "open_box"] = "unknown"
     promo_text: str = ""
     availability: str = "unknown"
     url: str
     image: str = ""
+    relevance_score: float = Field(default=0.0, ge=0.0, le=1.0)
     match_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source_domain: str = ""
-    match_key: str = ""
     parse_notes: list[str] = Field(default_factory=list)
 
 
-class ProductCluster(BaseModel):
+class ComparisonCluster(BaseModel):
     cluster_id: str
     brand: str
     model: str
+    variant: str = ""
     match_method: Literal["exact_model", "exact_sku", "fuzzy_llm"]
     confidence: float = Field(ge=0.0, le=1.0)
-    platforms: list[str]
     offer_count: int = Field(ge=2)
+    domains: list[str] = Field(default_factory=list)
+    offers: list[PurchaseOption] = Field(default_factory=list)
 
 
 class PricingFinding(BaseModel):
     label: Literal["none", "watch", "high", "critical"]
+    alert_eligible: bool = False
     spread_percent: float = Field(ge=0.0)
-    lowest_platform: str
-    highest_platform: str
+    lowest_offer_id: str = ""
+    highest_offer_id: str = ""
     reasoning: str
     confidence: float = Field(ge=0.0, le=1.0)
     claim_style_text: str
     evidence_notes: str
 
 
-class PlatformCoverage(BaseModel):
-    platform: str
-    status: Literal["found", "parsed", "matched", "missing", "error"]
-    candidate_count: int = Field(default=0, ge=0)
-    note: str = ""
-
-
 class CompareResponse(BaseModel):
     query: str
     normalized_query: str
     generated_at: datetime
-    coverage_status: Literal["full", "partial", "insufficient"]
-    matched_cluster: ProductCluster | None = None
-    offers: list[OfferView] = Field(default_factory=list)
+    scan_status: Literal["full", "partial", "insufficient", "degraded"]
+    scan_duration_ms: int = Field(ge=0)
+    offers_scanned: int = Field(ge=0)
+    offers_kept: int = Field(ge=0)
+    sources_seen: list[str] = Field(default_factory=list)
+    purchase_options: list[PurchaseOption] = Field(default_factory=list)
+    comparison_cluster: ComparisonCluster | None = None
     finding: PricingFinding | None = None
     warnings: list[str] = Field(default_factory=list)
-    platform_statuses: list[PlatformCoverage] = Field(default_factory=list)
 
 
 class CompareHistoryItem(BaseModel):
@@ -151,19 +153,22 @@ class CompareHistoryItem(BaseModel):
     query: str
     normalized_query: str
     generated_at: datetime
-    coverage_status: Literal["full", "partial", "insufficient"]
-    label: Literal["none", "watch", "high", "critical"]
+    scan_status: Literal["full", "partial", "insufficient", "degraded"]
+    offers_kept: int = Field(ge=0)
+    cluster_offer_count: int = Field(ge=0)
+    finding_label: Literal["none", "watch", "high", "critical"]
     spread_percent: float = Field(ge=0.0)
-    confidence: float = Field(ge=0.0, le=1.0)
-    platforms: list[str] = Field(default_factory=list)
+    top_domains: list[str] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     neo4j_enabled: bool
     tavily_enabled: bool
-    yutori_enabled: bool
-    slack_enabled: bool
-    discord_enabled: bool
     llm_enabled: bool
-    supported_platforms: list[str] = Field(default_factory=list)
+    site_search_fallback_enabled: bool
+    open_web_mode: bool
+
+
+OfferView = PurchaseOption
+ProductCluster = ComparisonCluster

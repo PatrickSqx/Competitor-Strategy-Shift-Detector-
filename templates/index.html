@@ -1,9 +1,9 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Suspicious Differential Pricing Detector</title>
+  <title>Open-Web Pricing Intel</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:wght@400;600&display=swap" rel="stylesheet">
@@ -12,9 +12,9 @@
 <body>
   <main class="shell">
     <section class="hero">
-      <p class="eyebrow">Cross-platform pricing intelligence</p>
-      <h1>Find public price spreads before they become strategy.</h1>
-      <p class="lede">Search one electronics model and compare list-price, promo pressure, and suspicious differential pricing across Best Buy, Micro Center, and Amazon.</p>
+      <p class="eyebrow">Open-web pricing intelligence</p>
+      <h1>Search the market, not just a shortlist.</h1>
+      <p class="lede">Find relevant purchase options across the public web, build one strict exact-model comparison cluster, and only flag suspicious differential pricing when the evidence is strong enough.</p>
       <form id="compare-form" class="search-panel">
         <label for="query" class="search-label">Search an electronics model</label>
         <div class="search-row">
@@ -27,44 +27,83 @@
       </form>
     </section>
 
-    <section class="status-strip" id="status-strip">
-      __STATUS_CARDS__
+    <section class="summary-grid" id="summary-grid">
+      <article class="summary-card">
+        <span class="summary-label">Scan status</span>
+        <strong id="summary-status">Awaiting query</strong>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Scan duration</span>
+        <strong id="summary-duration">-</strong>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Offers scanned</span>
+        <strong id="summary-scanned">0</strong>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Offers kept</span>
+        <strong id="summary-kept">0</strong>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Cluster size</span>
+        <strong id="summary-cluster">0</strong>
+      </article>
+    </section>
+
+    <section class="panel sources-panel">
+      <div class="panel-head">
+        <h2>Sources seen</h2>
+      </div>
+      <div id="sources-list" class="source-badges">
+        <span class="source-badge muted">No query yet</span>
+      </div>
     </section>
 
     <section class="results-grid">
-      <article class="panel panel-table">
+      <article class="panel panel-table panel-wide">
         <div class="panel-head">
-          <h2>Matched offers</h2>
-          <span id="coverage-pill" class="coverage-pill neutral">No query yet</span>
+          <h2>Relevant purchase options</h2>
+          <span id="scan-pill" class="coverage-pill neutral">No query yet</span>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Platform</th>
+                <th>Seller</th>
                 <th>Product</th>
                 <th>Price</th>
+                <th>Condition</th>
                 <th>Promo</th>
-                <th>Availability</th>
+                <th>Relevance</th>
                 <th>Match</th>
               </tr>
             </thead>
-            <tbody id="offers-body">
-              <tr class="empty-row"><td colspan="6">Run a search to compare public listed prices.</td></tr>
+            <tbody id="purchase-options-body">
+              <tr class="empty-row"><td colspan="7">Run a search to compare public listed prices.</td></tr>
             </tbody>
           </table>
         </div>
       </article>
 
+      <article class="panel panel-cluster">
+        <div class="panel-head">
+          <h2>Exact-match cluster</h2>
+          <span id="cluster-pill" class="finding-pill neutral">No cluster</span>
+        </div>
+        <div id="cluster-content" class="cluster-content">
+          <p class="body-copy">When the app finds at least two exact-model offers from distinct sellers or domains, the strict comparison cluster will appear here.</p>
+        </div>
+      </article>
+
       <article class="panel panel-analysis">
         <div class="panel-head">
-          <h2>Finding</h2>
+          <h2>Pricing intel finding</h2>
           <span id="finding-label" class="finding-pill neutral">Awaiting search</span>
         </div>
         <div id="finding-content" class="finding-content">
           <p class="metric"><span>Spread</span><strong id="spread-value">-</strong></p>
           <p id="finding-reasoning" class="body-copy">We compare public list prices only. No legal conclusion is made from this view.</p>
-          <p id="finding-claim" class="claim-copy">This tool flags suspicious differential pricing, not proven unlawful discrimination.</p>
+          <p id="finding-claim" class="claim-copy">This is a pricing-intel tool, not a legal discrimination detector.</p>
           <p id="finding-notes" class="note-copy">Taxes, shipping, and checkout-only adjustments are out of scope unless explicitly shown on the page.</p>
         </div>
       </article>
@@ -72,7 +111,7 @@
 
     <section class="panel warnings-panel">
       <div class="panel-head">
-        <h2>Warnings & caveats</h2>
+        <h2>Warnings and caveats</h2>
       </div>
       <ul id="warnings-list" class="warnings-list">
         <li>Results reflect public listed prices only.</li>
