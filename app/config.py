@@ -15,11 +15,11 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data" / "snapshots"
 load_dotenv(ROOT_DIR / ".env")
 
-DEFAULT_RETAIL_DOMAINS = ["bestbuy.com", "walmart.com", "target.com"]
+DEFAULT_RETAIL_DOMAINS = ["bestbuy.com", "microcenter.com", "amazon.com"]
 DEFAULT_SAMPLE_QUERIES = [
     "sony wh-1000xm5",
     "ipad 10th generation 64gb",
-    "bose quietcomfort ultra headphones",
+    "logitech g pro x superlight 2",
 ]
 
 

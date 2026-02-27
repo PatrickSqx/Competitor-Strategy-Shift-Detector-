@@ -27,7 +27,7 @@ from app.services.differential_pricing import DifferentialPricingService
 from app.services.history_service import HistoryService
 from app.services.product_extractor import ProductExtractorService
 from app.services.product_matcher import ProductMatcherService
-from app.services.query_discovery import QueryDiscoveryService
+from app.services.query_discovery import QueryDiscoveryService, platform_name_for_domain
 
 
 settings = get_settings()
@@ -98,7 +98,7 @@ def index(request: Request) -> HTMLResponse:
             '<span class="status-label">Waiting</span>'
             "</article>"
         )
-        for platform in ["Best Buy", "Walmart", "Target"]
+        for platform in _supported_platform_names()
     )
     page = INDEX_TEMPLATE.replace("__SAMPLE_CHIPS__", sample_buttons).replace("__STATUS_CARDS__", status_cards)
     return HTMLResponse(page)
@@ -114,57 +114,83 @@ def healthz() -> HealthResponse:
         slack_enabled=settings.slack_enabled,
         discord_enabled=settings.discord_enabled,
         llm_enabled=settings.llm_enabled,
-        supported_platforms=["Best Buy", "Walmart", "Target"],
+        supported_platforms=_supported_platform_names(),
     )
 
 
 @app.post("/api/compare", response_model=CompareResponse)
 def compare(request: CompareRequest) -> CompareResponse:
-    normalized_query, candidates, platform_statuses, warnings = query_discovery.discover(request.query)
-    offers, extract_warnings = product_extractor.extract_many(candidates)
-    warnings.extend(extract_warnings)
+    normalized_query = QueryDiscoveryService.normalize_query(request.query)
+    platform_statuses = _default_platform_statuses(status="missing")
+    warnings: list[str] = []
 
-    matched_cluster = None
-    selected_offers = offers
-    finding = None
+    try:
+        normalized_query, candidates, platform_statuses, warnings = query_discovery.discover(request.query)
+        offers, extract_warnings = product_extractor.extract_many(candidates)
+        warnings.extend(extract_warnings)
 
-    if offers:
-        matched_cluster, selected_offers, match_warnings = product_matcher.match(normalized_query, offers)
-        warnings.extend(match_warnings)
+        matched_cluster = None
+        selected_offers = offers
+        finding = None
 
-        if matched_cluster is not None:
-            coverage_status = _coverage_status(selected_offers)
-            finding = differential_pricing.analyze(
-                query=normalized_query,
-                matched_offers=selected_offers,
-                cluster=matched_cluster,
-                coverage_status=coverage_status,
-            )
-            platform_statuses = _merge_platform_statuses(platform_statuses, selected_offers, matched=True)
+        if offers:
+            matched_cluster, selected_offers, match_warnings = product_matcher.match(normalized_query, offers)
+            warnings.extend(match_warnings)
+
+            if matched_cluster is not None:
+                coverage_status = _coverage_status(selected_offers)
+                finding = differential_pricing.analyze(
+                    query=normalized_query,
+                    matched_offers=selected_offers,
+                    cluster=matched_cluster,
+                    coverage_status=coverage_status,
+                )
+                platform_statuses = _merge_platform_statuses(platform_statuses, selected_offers, matched=True)
+            else:
+                coverage_status = _coverage_status(offers)
+                platform_statuses = _merge_platform_statuses(platform_statuses, offers, matched=False)
         else:
-            coverage_status = _coverage_status(offers)
-            platform_statuses = _merge_platform_statuses(platform_statuses, offers, matched=False)
-    else:
-        coverage_status = "insufficient"
+            coverage_status = "insufficient"
 
-    if not offers:
-        warnings.append("No priced product pages could be extracted from the discovered candidates.")
-    if matched_cluster is None and offers:
-        warnings.append("No confident same-product cluster was found across the supported platforms.")
+        if not offers:
+            warnings.append("No priced product pages could be extracted from the discovered candidates.")
+        if matched_cluster is None and offers:
+            warnings.append("No confident same-product cluster was found across the supported platforms.")
 
-    response = CompareResponse(
-        query=request.query,
-        normalized_query=normalized_query,
-        generated_at=_utc_now(),
-        coverage_status=coverage_status,
-        matched_cluster=matched_cluster,
-        offers=selected_offers,
-        finding=finding,
-        warnings=dedupe(warnings),
-        platform_statuses=platform_statuses,
-    )
-    history_service.record_compare_response(response)
-    return response
+        response = CompareResponse(
+            query=request.query,
+            normalized_query=normalized_query,
+            generated_at=_utc_now(),
+            coverage_status=coverage_status,
+            matched_cluster=matched_cluster,
+            offers=selected_offers,
+            finding=finding,
+            warnings=dedupe(warnings),
+            platform_statuses=platform_statuses,
+        )
+        history_service.record_compare_response(response)
+        return response
+    except Exception as exc:
+        return CompareResponse(
+            query=request.query,
+            normalized_query=normalized_query,
+            generated_at=_utc_now(),
+            coverage_status="insufficient",
+            matched_cluster=None,
+            offers=[],
+            finding=None,
+            warnings=dedupe(
+                warnings
+                + [
+                    f"Backend compare failed: {exc.__class__.__name__}.",
+                    "Check Tavily, Gemini, Neo4j, and retailer extraction settings.",
+                ]
+            ),
+            platform_statuses=_default_platform_statuses(
+                status="error",
+                note="The backend run failed before a stable comparison could be completed.",
+            ),
+        )
 
 
 @app.get("/api/history", response_model=list[CompareHistoryItem])
@@ -250,3 +276,19 @@ def html_escape(value: str) -> str:
         .replace('"', "&quot;")
         .replace("'", "&#39;")
     )
+
+
+def _supported_platform_names() -> list[str]:
+    return [platform_name_for_domain(domain) for domain in settings.supported_retail_domains]
+
+
+def _default_platform_statuses(status: str, note: str = "") -> list[PlatformCoverage]:
+    return [
+        PlatformCoverage(
+            platform=platform_name_for_domain(domain),
+            status=status,
+            candidate_count=0,
+            note=note,
+        )
+        for domain in settings.supported_retail_domains
+    ]

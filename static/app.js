@@ -1,4 +1,4 @@
-const form = document.getElementById('compare-form');
+ï»¿const form = document.getElementById('compare-form');
 const queryInput = document.getElementById('query');
 const offersBody = document.getElementById('offers-body');
 const coveragePill = document.getElementById('coverage-pill');
@@ -32,7 +32,7 @@ form.addEventListener('submit', async (event) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, category: 'electronics' }),
     });
-    const payload = await response.json();
+    const payload = await parseResponse(response);
     if (!response.ok) {
       throw new Error(payload.detail || 'Compare request failed.');
     }
@@ -46,7 +46,7 @@ form.addEventListener('submit', async (event) => {
 async function loadHistory(query) {
   try {
     const response = await fetch(`/api/history?query=${encodeURIComponent(query)}`);
-    const payload = await response.json();
+    const payload = await parseResponse(response);
     if (!response.ok) {
       throw new Error(payload.detail || 'Could not load history.');
     }
@@ -154,8 +154,8 @@ function renderHistory(items) {
   historyList.innerHTML = items.map((item) => `
     <article class="history-card">
       <strong>${escapeHtml(item.query)}</strong>
-      <div class="history-meta">${escapeHtml(item.generated_at)} ¡¤ ${escapeHtml(item.coverage_status)} ¡¤ ${escapeHtml(item.label)}</div>
-      <div>Spread: ${Number(item.spread_percent).toFixed(2)}% ¡¤ Confidence: ${Math.round((item.confidence || 0) * 100)}%</div>
+      <div class="history-meta">${escapeHtml(item.generated_at)} Â· ${escapeHtml(item.coverage_status)} Â· ${escapeHtml(item.label)}</div>
+      <div>Spread: ${Number(item.spread_percent).toFixed(2)}% Â· Confidence: ${Math.round((item.confidence || 0) * 100)}%</div>
       <div>${escapeHtml((item.platforms || []).join(' / '))}</div>
     </article>
   `).join('');
@@ -183,4 +183,16 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
+}
+
+async function parseResponse(response) {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { detail: text.slice(0, 300) };
+  }
 }

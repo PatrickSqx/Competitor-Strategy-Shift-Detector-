@@ -2,7 +2,7 @@
 
 Single-page FastAPI web app that:
 - accepts an electronics search query,
-- discovers public product pages across Best Buy, Walmart, and Target,
+- discovers public product pages across Best Buy, Micro Center, and Amazon,
 - extracts listed prices and promo text,
 - matches the same product across platforms,
 - flags suspicious differential pricing based on public list prices,

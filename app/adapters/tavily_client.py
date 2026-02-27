@@ -122,8 +122,8 @@ class TavilyClient:
         lowered = hostname.lower()
         if "bestbuy" in lowered:
             return "Best Buy"
-        if "walmart" in lowered:
-            return "Walmart"
-        if "target" in lowered:
-            return "Target"
+        if "microcenter" in lowered:
+            return "Micro Center"
+        if "amazon" in lowered:
+            return "Amazon"
         return hostname

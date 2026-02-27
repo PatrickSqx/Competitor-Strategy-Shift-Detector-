@@ -32,7 +32,13 @@ class ProductExtractorService:
             if candidate.url in seen_urls:
                 continue
             seen_urls.add(candidate.url)
-            offer = self.extract_one(candidate)
+            try:
+                offer = self.extract_one(candidate)
+            except Exception as exc:
+                warnings.append(
+                    f'Extractor failed for {candidate.platform}: {exc.__class__.__name__}.'
+                )
+                continue
             if offer is None:
                 warnings.append(f'Could not parse a priced product page for {candidate.platform}.')
                 continue

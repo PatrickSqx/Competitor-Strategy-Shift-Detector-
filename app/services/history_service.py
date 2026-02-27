@@ -12,8 +12,14 @@ class HistoryService:
         return QueryDiscoveryService.normalize_query(query)
 
     def record_compare_response(self, response: CompareResponse) -> None:
-        self.store.record_compare_response(response)
+        try:
+            self.store.record_compare_response(response)
+        except Exception:
+            return
 
     def get_history(self, query: str, limit: int = 6) -> list[CompareHistoryItem]:
         normalized_query = self.normalize_query(query)
-        return self.store.get_compare_history(normalized_query, limit=limit)
+        try:
+            return self.store.get_compare_history(normalized_query, limit=limit)
+        except Exception:
+            return []

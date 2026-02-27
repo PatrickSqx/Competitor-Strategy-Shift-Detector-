@@ -8,8 +8,8 @@ from app.models import DiscoveryCandidate, PlatformCoverage
 
 PRODUCT_PATH_HINTS = {
     'bestbuy.com': ['/site/'],
-    'walmart.com': ['/ip/'],
-    'target.com': ['/p/'],
+    'microcenter.com': ['/product/'],
+    'amazon.com': ['/dp/', '/gp/product/'],
 }
 BLOCKED_TOKENS = ('review', 'blog', 'guide', 'news', 'category', 'search', 'deals')
 
@@ -93,8 +93,12 @@ class QueryDiscoveryService:
     def _platform_name(domain: str) -> str:
         if 'bestbuy' in domain:
             return 'Best Buy'
-        if 'walmart' in domain:
-            return 'Walmart'
-        if 'target' in domain:
-            return 'Target'
+        if 'microcenter' in domain:
+            return 'Micro Center'
+        if 'amazon' in domain:
+            return 'Amazon'
         return domain
+
+
+def platform_name_for_domain(domain: str) -> str:
+    return QueryDiscoveryService._platform_name(domain)
