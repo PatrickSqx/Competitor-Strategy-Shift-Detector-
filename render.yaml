@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: competitor-strategy-agent
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USER
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: YUTORI_API_KEY
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+      - key: SLACK_HIGH_CHANNEL
+        value: "#pricing-incidents"
+      - key: SLACK_WATCH_CHANNEL
+        value: "#pricing-watch"
