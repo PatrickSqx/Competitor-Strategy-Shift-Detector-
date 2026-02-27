@@ -16,16 +16,10 @@ services:
         sync: false
       - key: TAVILY_API_KEY
         sync: false
-      - key: YUTORI_API_KEY
-        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-pro
-      - key: SLACK_WEBHOOK_URL
-        sync: false
-      - key: DISCORD_WEBHOOK_URL
-        sync: false
       - key: SLACK_HIGH_CHANNEL
         value: "#pricing-incidents"
       - key: SLACK_WATCH_CHANNEL
