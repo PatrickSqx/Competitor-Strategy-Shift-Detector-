@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import re
 from urllib.parse import urlparse
 
 from app.adapters.tavily_client import TavilyClient
@@ -12,6 +13,7 @@ PRODUCT_PATH_HINTS = {
     'amazon.com': ['/dp/', '/gp/product/'],
 }
 BLOCKED_TOKENS = ('review', 'blog', 'guide', 'news', 'category', 'search', 'deals')
+NOISE_QUERY_TOKENS = {'buy', 'price', 'product', 'electronics', 'site'}
 
 
 class QueryDiscoveryService:
@@ -41,8 +43,10 @@ class QueryDiscoveryService:
             max_results_per_domain=self.max_results_per_domain,
         )
         grouped: dict[str, list[DiscoveryCandidate]] = defaultdict(list)
+        raw_counts: dict[str, int] = defaultdict(int)
         for candidate in raw_candidates:
-            if self._is_product_candidate(candidate):
+            raw_counts[candidate.domain] += 1
+            if self._is_product_candidate(candidate, normalized_query):
                 grouped[candidate.domain].append(candidate)
 
         candidates: list[DiscoveryCandidate] = []
@@ -56,7 +60,7 @@ class QueryDiscoveryService:
                         platform=self._platform_name(domain),
                         status='found',
                         candidate_count=len(domain_candidates),
-                        note=f'Found {len(domain_candidates)} product-page candidates.',
+                        note=f'Found {len(domain_candidates)} product-page candidates from {raw_counts.get(domain, len(domain_candidates))} discovered URLs.',
                     )
                 )
             else:
@@ -65,7 +69,7 @@ class QueryDiscoveryService:
                         platform=self._platform_name(domain),
                         status='missing',
                         candidate_count=0,
-                        note='No product-detail candidates found for this platform.',
+                        note=f'No product-detail candidates found from {raw_counts.get(domain, 0)} discovered URLs.',
                     )
                 )
 
@@ -73,7 +77,7 @@ class QueryDiscoveryService:
             warnings.append('No product pages were discovered. Try a more specific electronics model query.')
         return normalized_query, candidates, platform_statuses, warnings
 
-    def _is_product_candidate(self, candidate: DiscoveryCandidate) -> bool:
+    def _is_product_candidate(self, candidate: DiscoveryCandidate, normalized_query: str) -> bool:
         parsed = urlparse(candidate.url)
         hostname = parsed.netloc.lower()
         path = parsed.path.lower()
@@ -82,12 +86,15 @@ class QueryDiscoveryService:
         if any(token in path for token in BLOCKED_TOKENS):
             return False
         hints = PRODUCT_PATH_HINTS.get(candidate.domain, [])
-        if hints and not any(hint in path for hint in hints):
-            return False
+        query_tokens = self._query_tokens(normalized_query)
+        has_hint = any(hint in path for hint in hints) if hints else False
         title = candidate.title.lower()
         if any(token in title for token in BLOCKED_TOKENS):
             return False
-        return True
+        overlap = self._token_overlap(query_tokens, f"{candidate.title} {candidate.snippet} {path}")
+        if has_hint:
+            return overlap >= 0.2
+        return overlap >= 0.45
 
     @staticmethod
     def _platform_name(domain: str) -> str:
@@ -99,6 +106,27 @@ class QueryDiscoveryService:
             return 'Amazon'
         return domain
 
+    @staticmethod
+    def _query_tokens(normalized_query: str) -> set[str]:
+        tokens = {_normalize_token(token) for token in normalized_query.split()}
+        return {
+            token
+            for token in tokens
+            if token and token not in NOISE_QUERY_TOKENS and (len(token) >= 3 or any(char.isdigit() for char in token))
+        }
+
+    @staticmethod
+    def _token_overlap(query_tokens: set[str], haystack: str) -> float:
+        if not query_tokens:
+            return 0.0
+        haystack_tokens = {_normalize_token(token) for token in haystack.split()}
+        hits = sum(1 for token in query_tokens if token in haystack_tokens)
+        return hits / max(len(query_tokens), 1)
+
 
 def platform_name_for_domain(domain: str) -> str:
     return QueryDiscoveryService._platform_name(domain)
+
+
+def _normalize_token(token: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', token.lower())

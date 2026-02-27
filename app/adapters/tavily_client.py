@@ -39,30 +39,38 @@ class TavilyClient:
 
         candidates: list[DiscoveryCandidate] = []
         for domain in domains:
-            raw = self._search(
-                query=query,
-                max_results=max_results_per_domain,
-                include_domains=[domain],
-            )
-            if raw is None:
-                continue
-
-            for item in raw.get("results", []):
-                url = str(item.get("url", "")).strip()
-                if not url:
-                    continue
-                parsed = urlparse(url)
-                platform = self._platform_from_hostname(parsed.netloc or domain)
-                candidates.append(
-                    DiscoveryCandidate(
-                        platform=platform,
-                        domain=domain,
-                        title=str(item.get("title", "")).strip(),
-                        url=url,
-                        snippet=str(item.get("content", "")).strip()[:360],
-                        score=self._coerce_score(item.get("score")),
-                    )
+            seen_urls: set[str] = set()
+            for query_variant in self._product_query_variants(query, domain):
+                raw = self._search(
+                    query=query_variant,
+                    max_results=max_results_per_domain,
+                    include_domains=[domain],
+                    search_depth="advanced",
                 )
+                if raw is None:
+                    continue
+
+                for item in raw.get("results", []):
+                    url = str(item.get("url", "")).strip()
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    parsed = urlparse(url)
+                    platform = self._platform_from_hostname(parsed.netloc or domain)
+                    candidates.append(
+                        DiscoveryCandidate(
+                            platform=platform,
+                            domain=domain,
+                            title=str(item.get("title", "")).strip(),
+                            url=url,
+                            snippet=str(item.get("content", "")).strip()[:360],
+                            score=self._coerce_score(item.get("score")),
+                        )
+                    )
+                    if len([candidate for candidate in candidates if candidate.domain == domain]) >= max_results_per_domain:
+                        break
+                if len([candidate for candidate in candidates if candidate.domain == domain]) >= max_results_per_domain:
+                    break
         return candidates
 
     def _search(
@@ -70,10 +78,11 @@ class TavilyClient:
         query: str,
         max_results: int,
         include_domains: list[str] | None = None,
+        search_depth: str = "basic",
     ) -> dict[str, Any] | None:
         payload: dict[str, Any] = {
             "query": query,
-            "search_depth": "basic",
+            "search_depth": search_depth,
             "topic": "general",
             "max_results": max_results,
             "include_answer": False,
@@ -96,6 +105,17 @@ class TavilyClient:
             return response.json()
         except Exception:
             return None
+
+    @staticmethod
+    def _product_query_variants(query: str, domain: str) -> list[str]:
+        normalized = " ".join(query.split())
+        return [
+            normalized,
+            f"site:{domain} {normalized}",
+            f"site:{domain} buy {normalized}",
+            f"site:{domain} {normalized} price",
+            f"site:{domain} {normalized} product",
+        ]
 
     @staticmethod
     def _normalize(payload: dict[str, Any]) -> list[EvidenceItem]:

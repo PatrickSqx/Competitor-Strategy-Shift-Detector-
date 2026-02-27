@@ -1,9 +1,18 @@
 import unittest
 
-from app.models import OfferView, ProductCluster
+from app.models import DiscoveryCandidate, OfferView, ProductCluster
 from app.services.differential_pricing import DifferentialPricingService
 from app.services.product_matcher import ProductMatcherService
 from app.services.query_discovery import QueryDiscoveryService
+
+
+class FakeTavily:
+    def __init__(self, candidates):
+        self.enabled = True
+        self._candidates = candidates
+
+    def search_products(self, query, domains, max_results_per_domain=5):
+        return list(self._candidates)
 
 
 class CompareServicesTest(unittest.TestCase):
@@ -43,6 +52,46 @@ class CompareServicesTest(unittest.TestCase):
         finding = service.analyze('sony wh-1000xm5', offers, cluster, 'full')
         self.assertIn(finding.label, {'high', 'critical'})
         self.assertGreaterEqual(finding.spread_percent, 8.0)
+
+    def test_discovery_filters_to_product_pages(self) -> None:
+        tavily = FakeTavily(
+            [
+                DiscoveryCandidate(
+                    platform='Best Buy',
+                    domain='bestbuy.com',
+                    title='Sony WH-1000XM5 Wireless Noise Canceling Headphones - Black',
+                    url='https://www.bestbuy.com/site/sony-wh-1000xm5-wireless-noise-canceling-headphones-black/6505727.p',
+                    snippet='Shop Sony WH-1000XM5 wireless noise canceling headphones.',
+                ),
+                DiscoveryCandidate(
+                    platform='Amazon',
+                    domain='amazon.com',
+                    title='Amazon search results for sony wh-1000xm5',
+                    url='https://www.amazon.com/s?k=sony+wh-1000xm5',
+                    snippet='Search results page',
+                ),
+                DiscoveryCandidate(
+                    platform='Micro Center',
+                    domain='microcenter.com',
+                    title='Sony WH-1000XM5 Wireless Headphones',
+                    url='https://www.microcenter.com/product/123456/sony-wh-1000xm5-wireless-headphones',
+                    snippet='Sony WH-1000XM5 in stock now.',
+                ),
+            ]
+        )
+        service = QueryDiscoveryService(
+            tavily=tavily,
+            supported_domains=['bestbuy.com', 'microcenter.com', 'amazon.com'],
+            max_results_per_domain=5,
+        )
+        normalized, candidates, statuses, warnings = service.discover('sony wh-1000xm5')
+        self.assertEqual(normalized, 'sony wh-1000xm5')
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(sorted(candidate.platform for candidate in candidates), ['Best Buy', 'Micro Center'])
+        self.assertEqual(len(warnings), 0)
+        amazon = next(item for item in statuses if item.platform == 'Amazon')
+        self.assertEqual(amazon.status, 'missing')
+        self.assertIn('1 discovered URLs', amazon.note)
 
 
 if __name__ == '__main__':
