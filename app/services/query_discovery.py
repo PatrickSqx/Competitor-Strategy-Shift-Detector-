@@ -210,11 +210,16 @@ class QueryDiscoveryService:
                 or str(node.get("aria-label", "")).strip()
                 or str(node.get("title", "")).strip()
             )
-            snippet = str(node.get("aria-label", "")).strip()
+            context_text = self._site_search_context_text(node)
+            snippet = (str(node.get("aria-label", "")).strip() or context_text)[:360]
             if not title and not snippet:
                 continue
             if absolute_url in seen_urls:
                 continue
+
+            preview_price = self._parse_preview_price(context_text)
+            preview_availability = self._extract_preview_availability(context_text)
+            preview_condition = self._infer_preview_condition(f"{title} {snippet}")
 
             candidate = DiscoveryCandidate(
                 domain=self._root_domain(hostname),
@@ -223,6 +228,9 @@ class QueryDiscoveryService:
                 snippet=snippet[:360],
                 score=round(self._token_overlap(query_tokens, f"{title} {snippet} {absolute_url}"), 4),
                 source="site_search",
+                preview_price=preview_price,
+                preview_availability=preview_availability,
+                preview_condition=preview_condition,
             )
             if self._reject_candidate(candidate):
                 continue
@@ -302,6 +310,58 @@ class QueryDiscoveryService:
                 seen.add(item)
                 output.append(item)
         return output
+
+    @staticmethod
+    def _site_search_context_text(node) -> str:
+        candidates: list[str] = []
+        current = node
+        for _ in range(4):
+            if current is None:
+                break
+            text = current.get_text(" ", strip=True)
+            if 24 <= len(text) <= 1200:
+                candidates.append(text)
+            current = current.parent
+        for text in candidates:
+            if re.search(r"\$\s*[0-9]", text):
+                return text
+        return candidates[0] if candidates else ""
+
+    @staticmethod
+    def _parse_preview_price(text: str) -> float | None:
+        if not text:
+            return None
+        match = re.search(r"\$\s*([0-9]+(?:\.[0-9]{1,2})?)", text.replace(",", ""))
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _extract_preview_availability(text: str) -> str:
+        lowered = text.lower()
+        if "out of stock" in lowered:
+            return "out of stock"
+        if "in stock" in lowered:
+            return "in stock"
+        if "pickup" in lowered:
+            return "pickup available"
+        return ""
+
+    @staticmethod
+    def _infer_preview_condition(text: str) -> str:
+        lowered = text.lower()
+        if "open box" in lowered or "open-box" in lowered:
+            return "open_box"
+        if "renewed" in lowered or "refurbished" in lowered:
+            return "refurbished"
+        if "used" in lowered or "pre-owned" in lowered or "pre owned" in lowered:
+            return "used"
+        if "new" in lowered:
+            return "new"
+        return "unknown"
 
 
 def _normalize_token(value: str) -> str:

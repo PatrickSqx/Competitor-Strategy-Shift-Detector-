@@ -3,6 +3,7 @@
 from app.models import ComparisonCluster, DiscoveryCandidate, PurchaseOption
 from app.services.differential_pricing import DifferentialPricingService
 from app.services.product_matcher import ProductMatcherService, extract_model_identifier
+from app.services.product_extractor import ProductExtractorService
 from app.services.query_discovery import QueryDiscoveryService
 from app.services.relevance_ranker import RelevanceRanker
 
@@ -68,9 +69,13 @@ class CompareServicesTest(unittest.TestCase):
         html = """
         <html>
           <body>
-            <a href="/site/sony-wh-1000xm5-wireless-noise-canceling-headphones-black/6505727.p">
-              Buy Sony WH-1000XM5 Wireless Noise Canceling Headphones - Black
-            </a>
+            <div class="sku-item">
+              <a href="/site/sony-wh-1000xm5-wireless-noise-canceling-headphones-black/6505727.p">
+                Buy Sony WH-1000XM5 Wireless Noise Canceling Headphones - Black
+              </a>
+              <span class="priceView-hero-price priceView-customer-price">$349.99</span>
+              <span>In stock</span>
+            </div>
             <a href="/site/searchpage.jsp?st=sony+wh-1000xm5">Search results</a>
           </body>
         </html>
@@ -84,6 +89,25 @@ class CompareServicesTest(unittest.TestCase):
         self.assertEqual(scanned, 2)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].source, 'site_search')
+        self.assertEqual(candidates[0].preview_price, 349.99)
+
+    def test_product_extractor_uses_preview_price_when_detail_fetch_fails(self) -> None:
+        extractor = ProductExtractorService(timeout_seconds=0.01, max_workers=1, max_candidates_per_platform=1)
+        candidate = DiscoveryCandidate(
+            domain='amazon.com',
+            title='Sony WH-1000XM5 Wireless Noise Canceling Headphones',
+            url='https://www.amazon.com/dp/example',
+            snippet='Sony WH-1000XM5 new in stock $349.99',
+            source='site_search',
+            preview_price=349.99,
+            preview_availability='in stock',
+            preview_condition='new',
+        )
+        offer = extractor._offer_from_candidate_preview(candidate)
+        self.assertIsNotNone(offer)
+        self.assertEqual(offer.price, 349.99)
+        self.assertEqual(offer.condition, 'new')
+        self.assertIn('preview-price', offer.parse_notes)
 
     def test_discovery_token_overlap_handles_hyphenated_models(self) -> None:
         service = OfflineDiscoveryService(

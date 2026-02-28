@@ -79,7 +79,7 @@ class ProductExtractorService:
             )
             response.raise_for_status()
         except Exception:
-            return None
+            return self._offer_from_candidate_preview(candidate)
 
         final_url = str(response.url)
         parsed = urlparse(final_url)
@@ -107,7 +107,7 @@ class ProductExtractorService:
         variant = extract_variant_token(f"{title} {model}")
         price = self._extract_price(jsonld_product, meta, soup, html)
         if price is None:
-            return None
+            return self._offer_from_candidate_preview(candidate, final_url=final_url, title=title, brand=brand, model=model, variant=variant)
         currency = self._first_non_empty(
             self._offer_value(jsonld_product, "priceCurrency"),
             meta.get("product:price:currency", ""),
@@ -155,6 +155,45 @@ class ProductExtractorService:
             relevance_score=0.0,
             match_confidence=0.0,
             parse_notes=parse_notes,
+        )
+
+    def _offer_from_candidate_preview(
+        self,
+        candidate: DiscoveryCandidate,
+        final_url: str | None = None,
+        title: str = "",
+        brand: str = "",
+        model: str = "",
+        variant: str = "",
+    ) -> PurchaseOption | None:
+        if candidate.preview_price is None:
+            return None
+        url = final_url or candidate.url
+        source_domain = self._root_domain(urlparse(url).netloc or candidate.domain)
+        resolved_title = title or candidate.title or url
+        resolved_brand = brand or infer_brand(resolved_title)
+        resolved_model = model or extract_model_identifier(resolved_title)
+        resolved_variant = variant or extract_variant_token(f"{resolved_title} {resolved_model}")
+        condition = candidate.preview_condition if candidate.preview_condition else self._infer_condition(resolved_title, candidate.snippet, candidate.snippet, url)
+        availability = candidate.preview_availability or self._normalize_availability(candidate.snippet)
+        return PurchaseOption(
+            offer_id=self._offer_id(url),
+            seller_name=self._humanize_domain(source_domain),
+            source_domain=source_domain,
+            title=resolved_title,
+            brand=resolved_brand,
+            model=resolved_model,
+            variant=resolved_variant,
+            price=candidate.preview_price,
+            currency=(candidate.preview_currency or "USD").upper()[:3],
+            condition=condition,
+            promo_text=self._extract_promo_text(candidate.snippet, candidate.snippet),
+            availability=availability,
+            url=url,
+            image="",
+            relevance_score=0.0,
+            match_confidence=0.0,
+            parse_notes=[candidate.source, "preview-price"],
         )
 
     def _extract_product_jsonld(self, soup: BeautifulSoup) -> dict[str, Any] | None:

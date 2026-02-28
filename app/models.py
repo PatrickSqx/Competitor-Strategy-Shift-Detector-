@@ -87,6 +87,10 @@ class DiscoveryCandidate(BaseModel):
     snippet: str = ""
     score: float | None = None
     source: Literal["tavily", "site_search"] = "tavily"
+    preview_price: float | None = None
+    preview_currency: str = "USD"
+    preview_availability: str = ""
+    preview_condition: Literal["new", "unknown", "used", "refurbished", "open_box"] = "unknown"
 
 
 class PurchaseOption(BaseModel):
