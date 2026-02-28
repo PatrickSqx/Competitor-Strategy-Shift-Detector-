@@ -310,6 +310,7 @@ def _normalize_token(value: str) -> str:
 
 def _tokenize_text(value: str) -> set[str]:
     tokens: set[str] = set()
+    split_parts: list[str] = []
     for raw in re.findall(r"[a-z0-9][a-z0-9/-]*", value.lower()):
         cleaned = _normalize_token(raw)
         if cleaned and (len(cleaned) >= 3 or any(char.isdigit() for char in cleaned)):
@@ -318,4 +319,11 @@ def _tokenize_text(value: str) -> set[str]:
             normalized = _normalize_token(part)
             if normalized and (len(normalized) >= 3 or any(char.isdigit() for char in normalized)):
                 tokens.add(normalized)
+                split_parts.append(normalized)
+
+    for window in (2, 3):
+        for index in range(len(split_parts) - window + 1):
+            combined = "".join(split_parts[index:index + window])
+            if combined and re.search(r"\d", combined) and len(combined) >= 4:
+                tokens.add(combined)
     return tokens

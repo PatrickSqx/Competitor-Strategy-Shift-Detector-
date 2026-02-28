@@ -2,7 +2,7 @@
 
 from app.models import ComparisonCluster, DiscoveryCandidate, PurchaseOption
 from app.services.differential_pricing import DifferentialPricingService
-from app.services.product_matcher import ProductMatcherService
+from app.services.product_matcher import ProductMatcherService, extract_model_identifier
 from app.services.query_discovery import QueryDiscoveryService
 from app.services.relevance_ranker import RelevanceRanker
 
@@ -123,6 +123,36 @@ class CompareServicesTest(unittest.TestCase):
         ranked = ranker.rank('sony wh-1000xm5', offers)
         self.assertEqual(len(ranked), 1)
         self.assertEqual(ranked[0].offer_id, '1')
+        self.assertGreaterEqual(ranked[0].relevance_score, 0.55)
+
+    def test_extract_model_identifier_handles_spaced_fragments(self) -> None:
+        self.assertEqual(
+            extract_model_identifier('Razer Viper V3 Pro Wireless Esports Mouse - Black'),
+            'V3PRO',
+        )
+        self.assertEqual(
+            extract_model_identifier('Sony WH 1000XM5 Wireless Noise Canceling Headphones'),
+            'WH1000XM5',
+        )
+
+    def test_relevance_ranker_keeps_brandless_query_with_model_match(self) -> None:
+        ranker = RelevanceRanker()
+        offer = PurchaseOption(
+            offer_id='v3p',
+            seller_name='Micro Center',
+            source_domain='microcenter.com',
+            title='Razer Viper V3 Pro Wireless Esports Mouse - Black',
+            brand='Razer',
+            model='V3PRO',
+            variant='',
+            price=159.99,
+            url='https://example.com/v3p',
+            currency='USD',
+            condition='new',
+            parse_notes=['jsonld', 'product-page'],
+        )
+        ranked = ranker.rank('viper v3pro', [offer])
+        self.assertEqual(len(ranked), 1)
         self.assertGreaterEqual(ranked[0].relevance_score, 0.55)
 
     def test_exact_match_cluster(self) -> None:

@@ -11,6 +11,10 @@ COMMON_BRANDS = {
     "apple", "sony", "samsung", "bose", "google", "microsoft", "jbl", "beats", "lg", "hp", "dell", "lenovo",
     "asus", "acer", "canon", "nikon", "meta", "anker", "nintendo", "logitech", "marshall", "razer"
 }
+GENERIC_MODEL_STOPWORDS = {
+    "wireless", "gaming", "mouse", "headphones", "headset", "earbuds", "esports", "black", "white",
+    "silver", "blue", "red", "green", "pink", "edition", "series", "generation", "gen", "with", "for",
+}
 CAPACITY_PATTERN = re.compile(r"\b(32gb|64gb|128gb|256gb|512gb|1tb|2tb)\b", re.IGNORECASE)
 MODEL_PATTERNS = [
     re.compile(r"\b[A-Z]{1,5}[-/][A-Z0-9-]{2,}\b", re.IGNORECASE),
@@ -37,6 +41,9 @@ def extract_model_identifier(text: str) -> str:
         match = pattern.search(text)
         if match:
             return match.group(0).upper()
+    combined = _extract_compound_model_identifier(text)
+    if combined:
+        return combined
     tokens = [
         token
         for token in re.findall(r"\b[a-zA-Z0-9-]{4,}\b", text)
@@ -193,3 +200,28 @@ def classify_exact_match_method(model: str) -> str:
     if re.fullmatch(r"[A-Z0-9-]{6,}", normalized) and len(digits) >= len(letters) * 2 and len(letters) <= 2:
         return "exact_sku"
     return "exact_model"
+
+
+def _extract_compound_model_identifier(text: str) -> str:
+    tokens = re.findall(r"\b[A-Za-z0-9]+\b", text)
+    best = ""
+    best_score = -1
+    for window in (3, 2):
+        for index in range(len(tokens) - window + 1):
+            parts = tokens[index:index + window]
+            if any(part.lower() in COMMON_BRANDS or part.lower() in GENERIC_MODEL_STOPWORDS for part in parts):
+                continue
+            if not re.search(r"\d", parts[0]) and len(parts[0]) > 4:
+                continue
+            combined = "".join(parts).upper()
+            if len(combined) < 4 or len(combined) > 18:
+                continue
+            if not re.search(r"[A-Z]", combined) or not re.search(r"\d", combined):
+                continue
+            digit_parts = sum(1 for part in parts if re.search(r"\d", part))
+            short_parts = sum(1 for part in parts if len(part) <= 4)
+            score = digit_parts * 3 + short_parts * 2 - max(len(combined) - 10, 0)
+            if score > best_score:
+                best = combined
+                best_score = score
+    return best
